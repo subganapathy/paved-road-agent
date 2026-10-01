@@ -1,0 +1,35 @@
+{
+  "name": "drop-ingress-rule",
+  "why": "frontend is still authorized, but can no longer connect: its calls time out",
+  "change": {
+    "ref": "synthetic/drop-ingress-rule",
+    "files": [
+      {
+        "path": "service.yaml",
+        "status": "modified",
+        "patch": "@@ -9,3 +9,1 @@\n   ingress:\n-    - service: smallStepGiantLeap/frontend\n   egress:"
+      },
+      {
+        "path": "deploy/base/network/allow-from-frontend.yaml",
+        "status": "deleted",
+        "patch": "@@ -1,26 +0,0 @@\n-apiVersion: networking.k8s.io/v1\n-kind: NetworkPolicy\n"
+      },
+      {
+        "path": "deploy/base/kustomization.yaml",
+        "status": "modified",
+        "patch": "@@ -5,3 +5,2 @@\n-- network/allow-from-frontend.yaml\n"
+      },
+      {
+        "path": ".platform/sha256sums",
+        "status": "modified",
+        "patch": "@@ -1 +1 @@\n-abc  x\n+def  x\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [
+      "network"
+    ],
+    "verdict": "blocking"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "terraform-create-bucket",
+  "why": "a new resource: quota, cost and ownership",
+  "change": {
+    "ref": "synthetic/terraform-create-bucket",
+    "files": [
+      {
+        "path": "infra/storage.tf",
+        "status": "added",
+        "patch": "@@ -0,0 +1,5 @@\n+resource \"aws_s3_bucket\" \"exports\" {\n+  bucket = \"acme-exports\"\n+}\n"
+      }
+    ],
+    "plan_json": {
+      "resource_changes": [
+        {
+          "address": "aws_s3_bucket.exports",
+          "change": {
+            "actions": [
+              "create"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "aspects": [
+      "terraform",
+      "new-resource"
+    ],
+    "verdict": "warning"
+  }
+}

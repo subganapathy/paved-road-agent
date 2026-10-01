@@ -1,0 +1,25 @@
+{
+  "name": "new-call-in-code",
+  "why": "a new dependency: capacity on the callee, latency budget, retries, bounded work",
+  "change": {
+    "ref": "synthetic/new-call-in-code",
+    "files": [
+      {
+        "path": "internal/handlers/hello_service.go",
+        "status": "modified",
+        "patch": "@@ -10,2 +10,6 @@\n+\tcc, err := client.Dial(client.Target)\n+\tif err != nil {\n+\t\treturn nil, err\n+\t}\n"
+      },
+      {
+        "path": "go.mod",
+        "status": "modified",
+        "patch": "@@ -6 +6,2 @@\n+\tgithub.com/smallStepGiantLeap/ledger/client v0.0.0-20260929045153-79c960d6455d\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [
+      "new-call"
+    ],
+    "verdict": "warning"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "handler-logic-only",
+  "why": "application logic with no infrastructure impact; unclassified for the model to confirm",
+  "change": {
+    "ref": "synthetic/handler-logic-only",
+    "files": [
+      {
+        "path": "internal/handlers/hello_service.go",
+        "status": "modified",
+        "patch": "@@ -20 +20 @@\n-\treturn &hellov1.HelloResponse{Message: \"hello \" + req.GetName()}, nil\n+\treturn &hellov1.HelloResponse{Message: \"hi \" + req.GetName()}, nil\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [],
+    "verdict": "info"
+  }
+}

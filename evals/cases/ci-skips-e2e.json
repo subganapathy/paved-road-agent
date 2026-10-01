@@ -1,0 +1,20 @@
+{
+  "name": "ci-skips-e2e",
+  "why": "images would publish without the e2e proving anything",
+  "change": {
+    "ref": "synthetic/ci-skips-e2e",
+    "files": [
+      {
+        "path": ".github/workflows/ci.yaml",
+        "status": "modified",
+        "patch": "@@ -60,2 +60 @@\n-    needs: [test, image, e2e]\n+    needs: [test, image]\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [
+      "delivery"
+    ],
+    "verdict": "blocking"
+  }
+}

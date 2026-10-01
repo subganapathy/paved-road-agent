@@ -1,0 +1,25 @@
+{
+  "name": "breaking-proto-change",
+  "why": "renaming a field breaks every caller that sends name",
+  "change": {
+    "ref": "synthetic/breaking-proto-change",
+    "files": [
+      {
+        "path": "proto/hello/v1/hello.proto",
+        "status": "modified",
+        "patch": "@@ -14,3 +14,3 @@\n message HelloRequest {\n-  string name = 1;\n+  string full_name = 1;\n }\n"
+      },
+      {
+        "path": "client/gen/hello/v1/hello.pb.go",
+        "status": "modified",
+        "patch": "@@ -40 +40 @@\n-\tName string\n+\tFullName string\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [
+      "contract"
+    ],
+    "verdict": "blocking"
+  }
+}

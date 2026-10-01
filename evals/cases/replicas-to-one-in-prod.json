@@ -1,0 +1,20 @@
+{
+  "name": "replicas-to-one-in-prod",
+  "why": "one replica in prod: a node drain is an outage, and the PDB can't help",
+  "change": {
+    "ref": "synthetic/replicas-to-one-in-prod",
+    "files": [
+      {
+        "path": "deploy/envs/prod/kustomization.yaml",
+        "status": "modified",
+        "patch": "@@ -9 +9 @@\n-- patch: '[{\"op\":\"replace\",\"path\":\"/spec/replicas\",\"value\":3}]'\n+- patch: '[{\"op\":\"replace\",\"path\":\"/spec/replicas\",\"value\":1}]'\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [
+      "capacity"
+    ],
+    "verdict": "blocking"
+  }
+}

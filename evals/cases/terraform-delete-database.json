@@ -1,0 +1,33 @@
+{
+  "name": "terraform-delete-database",
+  "why": "a database destroyed without a final snapshot",
+  "change": {
+    "ref": "synthetic/terraform-delete-database",
+    "files": [
+      {
+        "path": "infra/db.tf",
+        "status": "modified",
+        "patch": "@@ -1,8 +0,0 @@\n-resource \"aws_db_instance\" \"orders\" {\n-  skip_final_snapshot = true\n-}\n"
+      }
+    ],
+    "plan_json": {
+      "resource_changes": [
+        {
+          "address": "aws_db_instance.orders",
+          "change": {
+            "actions": [
+              "delete"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "aspects": [
+      "terraform",
+      "deletion"
+    ],
+    "verdict": "blocking"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "authorize-every-method",
+  "why": "the grant widens from one method to all",
+  "change": {
+    "ref": "synthetic/authorize-every-method",
+    "files": [
+      {
+        "path": "service.yaml",
+        "status": "modified",
+        "patch": "@@ -8,2 +8,2 @@\n     - service: smallStepGiantLeap/frontend\n-      methods: [hello.v1.HelloService/Hello]\n+      methods: [\"*\"]\n",
+        "before": "apiVersion: vikrant.smallstepgiantleap.dev/v1alpha1\nkind: Service\nmetadata:\n  name: hello\nspec:\n  language: go\n  proto: proto/hello/v1/hello.proto\n  authorizedCallers:\n    - service: smallStepGiantLeap/frontend\n      methods: [hello.v1.HelloService/Hello]\n  ingress:\n    - service: smallStepGiantLeap/frontend\n",
+        "after": "apiVersion: vikrant.smallstepgiantleap.dev/v1alpha1\nkind: Service\nmetadata:\n  name: hello\nspec:\n  language: go\n  proto: proto/hello/v1/hello.proto\n  authorizedCallers:\n    - service: smallStepGiantLeap/frontend\n      methods: [\"*\"]\n  ingress:\n    - service: smallStepGiantLeap/frontend\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [
+      "authz"
+    ],
+    "verdict": "warning"
+  }
+}

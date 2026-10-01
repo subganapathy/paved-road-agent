@@ -1,0 +1,33 @@
+{
+  "name": "egress-to-unknown-host",
+  "why": "a new external destination: who is it, what leaves the cluster, is it bounded",
+  "change": {
+    "ref": "synthetic/egress-to-unknown-host",
+    "files": [
+      {
+        "path": "service.yaml",
+        "status": "modified",
+        "patch": "@@ -12,2 +12,3 @@\n   egress:\n+    - host: files.example.net:443\n",
+        "before": "apiVersion: vikrant.smallstepgiantleap.dev/v1alpha1\nkind: Service\nmetadata:\n  name: hello\nspec:\n  language: go\n  proto: proto/hello/v1/hello.proto\n  authorizedCallers:\n    - service: smallStepGiantLeap/frontend\n      methods: [hello.v1.HelloService/Hello]\n  ingress:\n    - service: smallStepGiantLeap/frontend\n  egress:\n    - service: smallStepGiantLeap/ledger\n      methods: [ledger.v1.LedgerService/GetBalance]\n",
+        "after": "apiVersion: vikrant.smallstepgiantleap.dev/v1alpha1\nkind: Service\nmetadata:\n  name: hello\nspec:\n  language: go\n  proto: proto/hello/v1/hello.proto\n  authorizedCallers:\n    - service: smallStepGiantLeap/frontend\n      methods: [hello.v1.HelloService/Hello]\n  ingress:\n    - service: smallStepGiantLeap/frontend\n  egress:\n    - service: smallStepGiantLeap/ledger\n      methods: [ledger.v1.LedgerService/GetBalance]\n    - host: files.example.net:443\n"
+      },
+      {
+        "path": "deploy/base/mesh/service-entry-files-example-net.yaml",
+        "status": "added",
+        "patch": "@@ -0,0 +1,12 @@\n+kind: ServiceEntry\n"
+      },
+      {
+        "path": "deploy/base/network/allow-to-files-example-net.yaml",
+        "status": "added",
+        "patch": "@@ -0,0 +1,20 @@\n+kind: NetworkPolicy\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [
+      "new-call",
+      "network"
+    ],
+    "verdict": "warning"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "terraform-replace-subnet",
+  "why": "a replacement is destroy then create: everything in the subnet goes with it",
+  "change": {
+    "ref": "synthetic/terraform-replace-subnet",
+    "files": [
+      {
+        "path": "infra/network.tf",
+        "status": "modified",
+        "patch": "@@ -3 +3 @@\n-  cidr_block = \"10.0.1.0/24\"\n+  cidr_block = \"10.0.2.0/24\"\n"
+      }
+    ],
+    "plan_json": {
+      "resource_changes": [
+        {
+          "address": "aws_subnet.app",
+          "change": {
+            "actions": [
+              "delete",
+              "create"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "expect": {
+    "aspects": [
+      "terraform",
+      "deletion"
+    ],
+    "verdict": "blocking"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "comment-only",
+  "why": "nothing that runs changed",
+  "change": {
+    "ref": "synthetic/comment-only",
+    "files": [
+      {
+        "path": "README.md",
+        "status": "modified",
+        "patch": "@@ -1 +1 @@\n-# hello\n+# hello: greets people\n"
+      },
+      {
+        "path": "service.yaml",
+        "status": "modified",
+        "patch": "@@ -1 +1 @@\n-# service.yaml for hello\n+# service.yaml for hello, owned by the hello team\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [],
+    "verdict": "info"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "dockerfile-runs-as-root",
+  "why": "PSS restricted refuses a root container: the rollout will never become ready",
+  "change": {
+    "ref": "synthetic/dockerfile-runs-as-root",
+    "files": [
+      {
+        "path": "Dockerfile",
+        "status": "modified",
+        "patch": "@@ -23 +23 @@\n-USER 65532:65532\n+USER 0:0\n"
+      }
+    ]
+  },
+  "expect": {
+    "aspects": [
+      "image"
+    ],
+    "verdict": "blocking"
+  }
+}
