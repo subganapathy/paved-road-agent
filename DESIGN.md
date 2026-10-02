@@ -478,64 +478,88 @@ through the proxy. Five slots, one closed interface each.
 A sixth slot, `traces`, is planned for debuggability (does the new path
 appear; latency by span).
 
-Inside the sandbox the agent has `read`, `glob`, `grep` over the mounted
-repositories and `repo_cmd` (`go list`, `git log/show`, `buf breaking`,
-allow-listed, timed). `bash` is off until the sandbox worker runs in a
-container.
+Inside the sandbox the agent has `read`, `glob`, `grep` and `bash` over
+the mounted repositories. Bash is on, because the sandbox is a pod in a
+kind cluster (section 10) whose only egress is the Anthropic API and the
+proxy service: no credentials, no service-account token, non-root,
+read-only root filesystem, CPU and memory limits. The worst bash can do
+there is waste its own quota. `go list`, `git`, `buf` are simply in the
+image.
 
-The lead additionally has `ask` (post a question and its answer-to-file
-mapping) and `propose` (a `.paved-agent/` change), both implemented as
-`scm` writes by the proxy.
+The connector operations above are **custom tools registered on the
+agents** (typed schemas, so the model gets validated inputs) and
+**executed by the sandbox worker** as thin HTTP clients of the proxy
+service. The model knows tool names; it does not know, and cannot
+affect, who executes them or with what identity. `ask` and `propose` are
+two of those tools, backed by the proxy's `scm` writes.
 
 ## 10. Runtime and security model
 
 ```
- customer boundary (laptop in M2; a cluster later)                Anthropic
- ┌─────────────────────────────┐   ┌──────────────────────────┐   ┌──────────────┐
- │ sandbox worker              │   │ connector proxy          │   │ Managed      │
- │  no credentials, no network │   │  proxy.yaml: slots,      │   │ Agents       │
- │  mounted repos (read-only)  │   │  profile, fleet, limits  │   │  sessions,   │
- │  read/glob/grep/repo_cmd    │   │  credentials via WIF/    │   │  lead +      │
- │                             │   │  OIDC/secret; audit log  │   │  specialists │
- └──────────────┬──────────────┘   └──────────────┬───────────┘   │  budgets,    │
-                │ tool events                     │ tool events   │  trace       │
-                └──────────────┬──────────────────┘               └──────┬───────┘
-                               └────────────── session event stream ──────┘
-                                                  │ read-only          │ read + 3 writes to the PR
-                                                  ▼                    ▼
-                               metrics · logs · alerts · cloud APIs    GitHub
+ customer boundary: a kind cluster in M2, any cluster later              Anthropic
+ ┌──────────────────────────────────────────────────────────────┐    ┌──────────────┐
+ │ ns paved-agent                                               │    │ Managed      │
+ │ ┌──────────────────────────┐    ┌──────────────────────────┐ │    │ Agents       │
+ │ │ sandbox-worker (pod)     │    │ proxy (pod)              │ │    │  sessions,   │
+ │ │  SDK environment worker  │───▶│  proxy.yaml: slots,      │ │    │  lead +      │
+ │ │  read/glob/grep/bash     │HTTP│  profile, fleet, limits  │ │    │  specialists │
+ │ │  connector tools = HTTP  │    │  credentials via WIF/    │ │    │  budgets,    │
+ │ │   clients of the proxy   │    │  OIDC/secret; policy;    │ │    │  trace       │
+ │ │  repos: unpacked from    │    │  audit log               │ │    └──────┬───────┘
+ │ │   the proxy's tarballs   │    │  controller: sessions,   │ │           │
+ │ │  egress: Anthropic API,  │    │   check states, collect  │ │  session event
+ │ │   proxy — nothing else   │    │                          │ │  stream (every
+ │ └──────────────────────────┘    └─────┬─────────┬──────────┘ │  tool call)
+ │                                       │         │            │
+ └───────────────────────────────────────┼─────────┼────────────┘
+                                read-only▼         ▼read + 3 writes to the PR
+                        metrics · logs · alerts · cloud APIs    GitHub
 ```
 
-- **The sandbox has no route to any server.** Its only channel is typed
-  tool calls over the session event stream. The proxy executes them. In
-  the managed-agents model this is the custom-tool runner; the design
-  gives it the proxy's full job: hold every credential, expose only the
-  slot interfaces, enforce per-call policy (read-only methods, bounded
-  ranges and result sizes, metric and label allowlists where the org
-  wants them, per-session call and cost limits), write an audit line per
-  call, and own the single write path (`propose` checks the path is under
-  `.paved-agent/` and the ref is the PR's head; `comment` and `check` are
-  the other two writes). Branch protection still requires a human to
-  merge.
+- **One runner, not two.** The sandbox worker executes every tool the
+  model calls: the built-ins locally, the connector tools by calling the
+  proxy over the in-cluster network. The session event stream is how the
+  model (at Anthropic) reaches tools in our environment at all, so every
+  tool call crosses it once; what this layout removes is a second runner
+  attached to the same session. The proxy is a plain internal HTTP
+  service, which also makes it usable from a CLI or a notebook with the
+  same policy.
+- **The sandbox has one route out besides the Anthropic API: the proxy.**
+  Enforced by a NetworkPolicy on the sandbox pod; no service-account token
+  is mounted; the repositories arrive as tarballs the proxy serves after
+  cloning with its own token. The sandbox holds no credential of any
+  kind. If the model used bash to call the proxy directly instead of
+  through a tool, it would get exactly what the tool gives it: policy
+  lives in the proxy, not in the caller.
+- **The proxy holds every credential and enforces policy.** It exposes
+  only the slot interfaces; per call it enforces read-only methods,
+  bounded ranges and result sizes, metric and label allowlists where the
+  org wants them, per-session call and cost limits; it writes an audit
+  line per call; it owns the single write path (`propose` checks the path
+  is under `.paved-agent/` and the ref is the PR's head; `comment` and
+  `check` are the other two writes). Branch protection still requires a
+  human to merge. The controller that creates sessions, posts check
+  states and collects reports runs in the same pod.
 - **The PR under review is untrusted input.** Any PR can contain text
   aimed at the agent. The worst a fully subverted agent can do is read
   what the org granted the proxy and propose a file change on the very PR
   it is reviewing, which a human then reads. Wide in reach, narrow in
   power. The proxy is the only component worth hardening, and it is
   small: five adapters and a policy layer.
-- **Credentials are short-lived.** The proxy's own identity (a service
-  account in a cluster; the operator's ADC on the laptop) is federated to
-  read-only cloud roles and metric/log readers at call time. No long-lived
-  keys; nothing in any repository.
-- **The sandbox's location is a free choice.** Self-hosted on the laptop
-  in M2 (the SDK's environment worker; repositories stay local; no token
-  given to the platform). Anthropic's cloud sandbox is a drop-in later: it
-  also has no network, and the proxy does not move.
+- **Credentials are short-lived.** The proxy pod's service account is
+  federated to read-only cloud roles and metric/log readers at call time
+  (Workload Identity in GKE; on kind in M2, the operator's ADC mounted
+  into the proxy pod only). No long-lived keys; nothing in any
+  repository.
+- **Why kind and not Docker alone.** The same manifests (two Deployments,
+  a NetworkPolicy, a Service) are the production deployment on the
+  customer's cluster; kind is that deployment on the laptop. One shape to
+  test and ship.
 - **GCP for the eval**: a reviewer service account with `roles/viewer` and
-  `roles/iam.securityReviewer` on the listed projects; kind clusters with
-  kube-state-metrics and Istio for placement; a GKE Autopilot cluster only
-  while testing Workload Identity (fixture C), created and deleted in the
-  same session.
+  `roles/iam.securityReviewer` on the listed projects; the kind cluster
+  carries kube-state-metrics and Istio for placement; a GKE Autopilot
+  cluster only while testing Workload Identity (fixture C), created and
+  deleted in the same session.
 
 ## 11. Implementation design
 
@@ -543,16 +567,19 @@ mapping) and `propose` (a `.paved-agent/` change), both implemented as
 
 ```
 cmd/change-agent      setup | review | worker | proxy
+deploy/               kind manifests: sandbox-worker and proxy Deployments, NetworkPolicy, Service
 internal/change       the change (exists)
 internal/findings     report contract: six dimensions, findings, unknowns, questions, proposals
 internal/identifiers  .paved-agent/discover.yaml: schema, load, lint (identifiers only), derive helpers
 internal/profile      standard queries per stack: kube-state-metrics+istio, kube-state-metrics+otel
-internal/proxy        slots (metrics, logs, alerts, scm, cloud), adapters, policy, audit, config
+internal/proxy        the HTTP service: slots (metrics, logs, alerts, scm, cloud), adapters, policy,
+                      audit, config, repo tarballs; and the controller (sessions, check states, collect)
+internal/connectors   the tools' side: typed schemas registered on the agents, HTTP clients of the proxy
 internal/discover     follow identifiers through the proxy with a profile; owner-kind resolution
-internal/sandbox      the worker: workdir, mounts, repo_cmd, agenttoolset subset
+internal/sandbox      the worker: workdir, unpack tarballs, agenttoolset + connector tools
 internal/agents       lead, org-finder, topology, cloud (definitions as code; the change-kind
                       catalogue lives in the lead's system prompt)
-internal/session      create, run both runners, collect the report, check state
+internal/session      create, watch, collect the report
 internal/github       PRs → changes (exists); checks, comment threads, suggestions, branch commits
 internal/classify     milestone-1 rules; kept only until M2 measures a pre-pass
 evals/                fixtures (PR refs + expectations), recorded metric/scm responses, judge rubric
@@ -560,11 +587,14 @@ evals/                fixtures (PR refs + expectations), recorded metric/scm res
 
 ### 11.2 Session lifecycle
 
-1. `review` loads the PR and `.paved-agent/`, lints it, and creates the
-   session: lead agent version, environment, budget, the repository as a
-   resource (the worker mounts it), initial message = the brief (change,
-   identifiers, referenced docs' paths, the roster).
-2. The worker and the proxy attach; tool calls flow; the lead delegates.
+1. `review` (the controller in the proxy pod, or the CLI) loads the PR
+   and `.paved-agent/`, lints it, clones the repository with the proxy's
+   token, and creates the session: lead agent version, environment,
+   budget, initial message = the brief (change, identifiers, referenced
+   docs' paths, the roster).
+2. The sandbox worker claims the session, fetches the repository tarball
+   from the proxy, and serves every tool: built-ins locally, connector
+   tools by calling the proxy. The lead delegates.
 3. **Discovery** follows the identifiers through the proxy; broken ones
    are reported to the lead as such.
 4. **Question**: the lead ends with a report whose `questions` are
@@ -665,7 +695,7 @@ past the cap.
 | Self-healing | break `hello`'s selector in a fixture branch | eval-live | reported broken, derivation proposes the fix, no false findings |
 | Gate | D: first run asks exactly one question and gates; a prose reply produces the file; second run passes with no question | eval-live, CLI first, GitHub check in M5 | state sequence as in section 4 |
 | Judge | claim quality against a rubric (evidence matches claim; recommendation actionable; no unsupported numbers) | Sonnet judge over the report JSON, scores stored | ≥ baseline; drift flagged |
-| Safety | every connector refuses non-read operations; `propose` only touches `.paved-agent/` on the PR head; sandbox confined to workdir; event and proposal scan for `github_pat_`, `ya29.`, bearer tokens; a PR containing instructions to the agent produces no action beyond a proposal on itself | unit + scan + one adversarial fixture in eval-live | zero hits |
+| Safety | every connector refuses non-read operations; `propose` only touches `.paved-agent/` on the PR head; the sandbox pod can reach only the Anthropic API and the proxy (NetworkPolicy test from inside the pod), mounts no service-account token, runs non-root on a read-only root; event and proposal scan for `github_pat_`, `ya29.`, bearer tokens; a PR containing instructions to the agent produces no action beyond a proposal on itself | unit + scan + one adversarial fixture in eval-live | zero hits |
 | Cost | per-fixture ceilings; later runs of a repo cheaper than its bootstrap; monthly cap | eval-live | CI fails on breach |
 
 Golden reports are kept per fixture; a change to a prompt or a profile
@@ -674,11 +704,13 @@ re-runs the fixtures and diffs the judge scores before it is merged.
 ## 14. Milestones
 
 - **M2 — identifiers, profile, proxy.** `discover.yaml` schema and lint;
-  the `kube-state-metrics+istio` profile; the proxy with `metrics` and
-  `scm` slots and policy; `discover` incl. owner kinds; the derivation
-  chain; the questioner on the CLI; self-hosted worker; kube-state-metrics
-  and Istio metrics on the sgrpc fleet; hand-written identifiers for the
-  demo repos; fixtures A, D, E. Exit: A reviewed with six dimensions; D
+  the `kube-state-metrics+istio` profile; the proxy service with
+  `metrics` and `scm` slots, policy and tarballs; connector tools as HTTP
+  clients; `discover` incl. owner kinds; the derivation chain; the
+  questioner on the CLI; the sandbox worker and proxy deployed on kind
+  with the NetworkPolicy; kube-state-metrics and Istio metrics on the
+  sgrpc fleet; hand-written identifiers for the demo repos; fixtures A,
+  D, E. Exit: A reviewed with six dimensions; D
   asks exactly one question and passes after the file lands; E under
   $0.3; the derivation test matches the hand-written files.
 - **M3 — cross-repo and signals.** Org finder, `scm.open_prs`, `logs` and
@@ -702,6 +734,7 @@ re-runs the fixtures and diffs the judge scores before it is merged.
 4. The `kube-state-metrics+istio` profile first; which second?
 5. Analysis in the lead (one Opus context) vs. six Sonnet analysts — lead
    for M2, then measure.
-6. Bash off until the sandbox worker runs in a container.
+6. Bash on, inside the kind-deployed sandbox pod with the NetworkPolicy
+   — agree that's the boundary we rely on?
 7. Anything in section 8 that does not match how you'd expect the reviewer
    to think.
