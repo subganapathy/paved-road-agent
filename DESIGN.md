@@ -9,8 +9,10 @@ in that repo's `.paved-agent/`. Every data source is a **connector slot**
 in a **proxy** deployed inside the customer boundary, bound at install
 time, read-only, with no API-server access. Six dimensions (scale and test
 coverage added). Questions are answered as PR comments; the bot turns the
-answer into the file; the check stays blocked until it does. Learned
-invariants and PR norms are dropped.
+answer into the file; the check stays blocked until it does. Agent-inferred
+invariants and PR norms are no longer stored; author-stated ones
+(`CLAUDE.md`, `AGENTS.md`, `CONTRIBUTING`, ADRs) are referenced and
+enforced.
 
 ## 1. The model in one paragraph
 
@@ -290,9 +292,21 @@ Rules:
 - **Docs are referenced, not copied.** The lead reads them live each run,
   so they cannot go stale in memory.
 
-No learned invariants, no PR norms. Both go stale and both can be judged
-live: the lead reads the surrounding code and the referenced docs at
-review time, which is cheaper than maintaining a summary of them.
+Two kinds of invariant, treated differently:
+
+- **Author-stated** — rules a human wrote in the referenced docs. Enforced:
+  a diff that breaks one is a finding whose evidence is the rule (file and
+  line) and the offending change. They cannot go stale in our memory
+  because they are never copied out of the repo.
+- **Agent-inferred** — patterns the agent notices in the code ("12 of 12
+  handlers count their status"). Not stored; they drift. The lead still
+  uses them, live, as context from the surrounding code: "every other
+  handler here counts its status; this one doesn't" is a finding with the
+  neighbouring handlers as evidence, not a remembered rule.
+
+The same split applies to PR norms: a PR template or a documented review
+checklist is author-stated and enforced; "PRs here usually touch the e2e
+too" is inferred and not stored.
 
 ### 7.2 Run memory
 
@@ -727,8 +741,8 @@ re-runs the fixtures and diffs the judge scores before it is merged.
 
 1. Six dimensions as in section 3 — scale and test coverage in, and
    "capacity" folded into scale. Agree?
-2. Dropping learned invariants and PR norms entirely (judged live from
-   the diff, surrounding code and referenced docs) — agree?
+2. Author-stated invariants enforced from the referenced docs;
+   agent-inferred ones used live but never stored — agree?
 3. `allow_bot_commits` per repo in `proxy.yaml`, suggested changes
    elsewhere — agree?
 4. The `kube-state-metrics+istio` profile first; which second?
