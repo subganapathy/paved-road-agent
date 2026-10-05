@@ -850,6 +850,33 @@ Nothing in M2 is built in a way that blocks this; two things move:
 Tenant isolation is one proxy, one environment, one budget per tenant.
 The report contract, the connectors and the profiles do not change.
 
+### 10.4 Sandboxes per tenant
+
+A session is a *work item* on the tenant's self-hosted environment, and a
+sandbox claims exactly one. The SDK splits the two halves — a poller that
+claims items, and a handler that runs one claimed item — which is the
+pattern used here:
+
+- **One tenant = one Managed Agents environment, one environment key,
+  one namespace, one proxy, one budget.** The environment key is what
+  lets the tenant's sandbox-manager claim work for that tenant and
+  nothing else.
+- **One sandbox = one session.** The sandbox-manager, running in the
+  tenant's cluster next to the proxy, claims one item and creates one
+  sandbox pod for it: a fresh image, the tenant's NetworkPolicy, no
+  credentials. The pod runs the item to completion and exits. Nothing
+  carries over between PRs or between tenants.
+- **A warm pool** of K idle, unassigned pods per tenant hides image pull
+  so that claim-to-running is seconds. Pool size is per-tenant
+  configuration.
+- **The API** is the sandbox-manager's: claim-and-run one item; set the
+  pool size. Tenants who do not need repositories kept on-prem can use
+  Anthropic's cloud sandbox instead, with no pool at all — same proxy,
+  same session.
+
+The sandbox-manager is the orchestrator for self-hosted sandboxes; it
+falls out of this design rather than being a second system.
+
 ## 11. Implementation design
 
 ### 11.1 Packages
@@ -991,6 +1018,31 @@ monthly total and refuses past the cap.
 
 Golden reports are kept per fixture; a change to a prompt or a profile
 re-runs the fixtures and diffs the judge scores before it is merged.
+
+### 13.1 What testing costs
+
+Every run of the lead on the strongest model costs money, so the suite is
+built to be mostly free and the paid part is tiered: iterating costs
+cents; only the release gate costs dollars.
+
+| Tier | What runs | Model | Cost per run | When |
+|---|---|---|---|---|
+| Unit + recorded | proxy policy, profiles, discovery, identifiers, controller, check states, the no-product-names test — everything deterministic | none | $0 | every commit |
+| Replay | worker, controller and proxy driven end-to-end by a recorded session: a fake event stream replays a past run's `tool_use` events and expects the same results | none | $0 | every commit |
+| Smoke | 2 fixtures, lead on the smallest model at low effort; checks the instantiation (right obligations?) and the report's shape, not verdict quality | Haiku | ~$0.05 | every prompt change |
+| Dev | 5 fixtures, Sonnet lead and specialists; verdicts and required findings | Sonnet | ~$1–2 | before pushing a prompt or profile change |
+| Release | all fixtures, Opus lead; judge scores against golden reports | Opus | ~$6–12 | merge to main; nightly at most |
+
+Why this holds: most iteration is on deterministic code (profiles,
+discovery, proxy, controller) and costs nothing; the program is
+model-agnostic, so a cheaper model running the same `qualities.yaml` is a
+valid lower bound — if it instantiates the right obligations the stronger
+model will too, and if it cannot produce a well-formed report the prompt
+is broken regardless of model; every fixture shares the same prompt
+prefix, so cached input is a fraction of the price and fixtures run
+back-to-back to keep the cache warm; a change to one quality's entry
+re-runs only the fixtures that exercise it; and three caps bound the
+damage of a runaway loop — per run, per CI run, per month.
 
 ## 14. Milestones
 
