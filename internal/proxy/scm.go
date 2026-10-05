@@ -209,6 +209,43 @@ func (s *scmSlot) pr(ctx context.Context, r prReq) (any, int, error) {
 	return loaded, 200, nil
 }
 
+// repos lists the org's repositories: the org finder's fallback when code
+// search is not indexed (small or new orgs often are not).
+func (s *scmSlot) repos(ctx context.Context) (any, int, error) {
+	type repo struct {
+		Name        string   `json:"name"`
+		Description string   `json:"description,omitempty"`
+		Topics      []string `json:"topics,omitempty"`
+		Language    string   `json:"language,omitempty"`
+		Default     string   `json:"default_branch"`
+		Pushed      string   `json:"pushed_at"`
+		Archived    bool     `json:"archived,omitempty"`
+	}
+	var out []repo
+	for page := 1; page <= 10; page++ {
+		var batch []struct {
+			Name          string   `json:"name"`
+			Description   string   `json:"description"`
+			Topics        []string `json:"topics"`
+			Language      string   `json:"language"`
+			DefaultBranch string   `json:"default_branch"`
+			PushedAt      string   `json:"pushed_at"`
+			Archived      bool     `json:"archived"`
+		}
+		status, err := s.getJSON(ctx, fmt.Sprintf("/orgs/%s/repos?per_page=100&page=%d&sort=pushed", url.PathEscape(s.org), page), &batch)
+		if err != nil {
+			return nil, status, err
+		}
+		for _, b := range batch {
+			out = append(out, repo{b.Name, b.Description, b.Topics, b.Language, b.DefaultBranch, b.PushedAt, b.Archived})
+		}
+		if len(batch) < 100 {
+			break
+		}
+	}
+	return out, 200, nil
+}
+
 // openPRs lists the repository's open pull requests, for cross-PR impact.
 func (s *scmSlot) openPRs(ctx context.Context, r openPRReq) (any, int, error) {
 	name, err := s.repo(r.Repo)

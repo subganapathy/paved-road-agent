@@ -278,7 +278,11 @@ Work like this:
 1. Search with scm_search_code for names that cannot be renamed by
    mirroring into a private registry or by installing under another
    release name: custom resource kinds, container names, chart structure,
-   import paths. Avoid searching for public image references.
+   import paths. Avoid searching for public image references. Code search
+   is often not indexed for an organisation ("total 0" even for words you
+   know exist): then list the repositories with scm_repos, pick candidates
+   by name, description and topics, and confirm each by reading a file it
+   would have to contain (a service definition, a chart, a module file).
 2. Rank repositories by where the hits cluster. Prefer the repository
    where the thing is defined over ones that merely reference it.
 3. Mount the best candidate with scm_mount and read enough to confirm it

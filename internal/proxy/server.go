@@ -118,6 +118,12 @@ func (s *Server) routes() {
 		}
 		return s.scm.searchCode(ctx, in)
 	}))
+	s.mux.HandleFunc("POST /v1/scm/repos", s.guard("scm", "repos", func(ctx context.Context, r *http.Request) (any, int, error) {
+		if s.scm == nil {
+			return nil, 501, errors.New("scm slot is not bound")
+		}
+		return s.scm.repos(ctx)
+	}))
 	s.mux.HandleFunc("POST /v1/scm/read", s.guard("scm", "read", func(ctx context.Context, r *http.Request) (any, int, error) {
 		if s.scm == nil {
 			return nil, 501, errors.New("scm slot is not bound")

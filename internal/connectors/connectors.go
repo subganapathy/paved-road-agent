@@ -123,6 +123,7 @@ const (
 	MetricsQueryRange = "metrics_query_range"
 	MetricsSeries     = "metrics_series"
 	MetricsRules      = "metrics_rules"
+	SCMRepos          = "scm_repos"
 	SCMSearchCode     = "scm_search_code"
 	SCMRead           = "scm_read"
 	SCMMount          = "scm_mount"
@@ -134,7 +135,7 @@ const (
 var Sets = map[string][]string{
 	"lead":       {Fleet, SCMPR, SCMOpenPRs, SCMRead, SCMMount, MetricsRules},
 	"topology":   {Fleet, MetricsLabelVals, MetricsQuery, MetricsQueryRange, MetricsSeries, MetricsRules, SCMRead},
-	"org-finder": {Fleet, SCMSearchCode, SCMRead, SCMMount},
+	"org-finder": {Fleet, SCMRepos, SCMSearchCode, SCMRead, SCMMount},
 }
 
 // Tools builds every connector tool bound to one session's client and the
@@ -206,6 +207,15 @@ func Tools(c *Client, workdir string) ([]anthropic.BetaTool, error) {
 			"The alerting and recording rules the metrics backend evaluates: the way to learn whether an alert watches a signal.",
 			func(ctx context.Context, _ emptyIn) (anthropic.BetaToolResultBlockParamContentUnion, error) {
 				out, err := c.call(ctx, "POST", "/v1/metrics/rules", nil)
+				if err != nil {
+					return fail(err)
+				}
+				return text(out)
+			})),
+		add(toolrunner.NewBetaToolFromJSONSchema(SCMRepos,
+			"List the organisation's repositories with description, topics, language and last push. Use it when code search returns nothing or reports incomplete results — many organisations are not indexed — and pick candidates by name and topic, then confirm by reading a known file.",
+			func(ctx context.Context, _ emptyIn) (anthropic.BetaToolResultBlockParamContentUnion, error) {
+				out, err := c.call(ctx, "POST", "/v1/scm/repos", nil)
 				if err != nil {
 					return fail(err)
 				}
