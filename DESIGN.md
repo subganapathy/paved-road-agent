@@ -1,10 +1,15 @@
 # paved-road-agent: design
 
-Status: revision 7, 2026-10-05. [VISION.md](VISION.md) holds the why;
+Status: revision 8, 2026-10-05. [VISION.md](VISION.md) holds the why;
 [subbu-thoughts.md](subbu-thoughts.md) holds the thesis this revision
 adopts.
 
-Changes in revision 7: the review is stated as three moves — instantiate
+Changes in revision 8: the program is reframed through the lens of
+**avoiding incidents** — nine properties a good change shows, each
+closing one way a change causes an incident (not correct, not reversible,
+over budget, unstable, delivered blind, fragile, exposed, invisible,
+unproven); `qualities.yaml` is written in full and the report's
+dimensions follow it. Changes in revision 7: the review is stated as three moves — instantiate
 the qualities for this change, discover, grade and post — and the
 **discovered stack binding is cached in `.paved-agent/`** as a
 hypothesis the next run verifies cheaply (mesh, deployment controller,
@@ -29,8 +34,10 @@ the hosted path.
 
 ## 1. The model in one paragraph
 
-An agent that assesses every pull request on seven qualities — **blast
-radius, correctness, scale, resilience, debuggability, test coverage** —
+An agent that assesses every pull request against the nine properties
+of a good change — **correct, reversible, within budget, stable under
+failure, progressively delivered, available, secure, observable,
+proven** — each named for the incident it prevents —
 by discovering, on every run, where the changed code runs and what it
 touches. The only assumption about the environment is Kubernetes. It
 reviews; it never executes. It reaches the environment only through a
@@ -54,7 +61,7 @@ Terms as they are used in the rest of this document.
 |---|---|
 | **Managed Agents** | Anthropic's hosted agent runtime. It runs the models, their turns, delegation between agents, budgets, and keeps the trace. It does not run our tools; it asks us to. |
 | **Agent** | A versioned configuration on Managed Agents: a model, a system prompt, a list of tools. We define five. |
-| **Lead** | The agent that owns a review: reads the diff, decides what must be discovered, delegates to specialists, judges the seven qualities, writes the report. Runs on the strongest model. |
+| **Lead** | The agent that owns a review: reads the diff, decides what must be discovered, delegates to specialists, judges the nine properties, writes the report. Runs on the strongest model. |
 | **Specialist** | An agent the lead delegates one task to and that returns facts: the *org finder*, the *topology discoverer*, the *cloud discoverer*. Run on a smaller model. |
 | **Session** | One review: the lead's conversation plus its specialists' sub-conversations, with a dollar budget. |
 | **Tool call** | An agent asking for something to be done outside the model: read a file, run a query. Managed Agents emits it as an event on the session's stream and waits for a result. |
@@ -62,11 +69,11 @@ Terms as they are used in the rest of this document.
 | **Worker** | The process in the sandbox that watches the session's event stream, executes each tool call, and posts the result. |
 | **Proxy** | The service that holds every credential and talks to the real systems. Every connector call from the sandbox goes through it. |
 | **Connector (slot)** | One of five typed, read-only interfaces the proxy exposes: `metrics`, `logs`, `alerts`, `scm` (source control), `cloud`. Each slot is *bound* at install time to a concrete backend. |
-| **Stack discovery** | The topology specialist's first job in every run: working out from metric names, manifests and its own knowledge which mesh, deployment tool, policy enforcer, admission engine and autoscaler the fleet uses, and therefore which queries answer the qualities' questions. There is no table of stacks in the code. |
+| **Stack discovery** | The topology specialist's first job in every run: working out from metric names, manifests and its own knowledge which mesh, deployment tool, policy enforcer, admission engine and autoscaler the fleet uses, and therefore which queries answer the properties' questions. There is no table of stacks in the code. |
 | **Identifiers** | The small file `.paved-agent/discover.yaml` in the repository: namespace, labels and container name that identify this service's pods anywhere, plus answers to past questions. |
 | **Discovery** | Following the identifiers through the connectors to learn what runs where, how much traffic it carries, who calls it, and what it depends on — with queries the specialist forms from the stack it discovered. |
 | **Run memory** | What discovery produced in this session. Kept for the run, summarized in the report, then gone. |
-| **Quality / dimension** | One of the seven properties every safe change has. The program defines them; the report gives each a verdict. |
+| **Property / dimension** | One of the nine properties a good change shows, each closing one way a change causes an incident. The program defines them; the report gives each a verdict. |
 | **Finding** | One claim with evidence, under one dimension, with a severity: `info`, `warning`, `blocking`. |
 | **Question** | What the lead asks when it cannot derive an identifier: yes/no, with the file change each answer implies. |
 | **Proposal** | A change to `.paved-agent/` the agent wants made, applied by the proxy as a commit or a suggested change. |
@@ -81,8 +88,9 @@ Goals
 - Any production modification that arrives as a PR: code, Kubernetes
   manifests, cloud infrastructure (Terraform, Pulumi, Crossplane), dynamic
   configuration — including pure code changes with no manifest in the diff.
-- The agent's program is a reviewable specification — seven qualities
-  with their evidence rules, instantiated per change — not prose. A stronger model runs the same program
+- The agent's program is a reviewable specification — nine properties
+  of a good change with their evidence rules, instantiated per change —
+  not prose. A stronger model runs the same program
   better; a human can read and amend it.
 - Findings with evidence: a metric, a file and line, a cloud API response,
   or a human's answer. Never an unsupported claim.
@@ -116,25 +124,30 @@ Assumptions
   and other repositories in the org read through the `scm` connector.
 - Cloud providers are parameters, not assumptions: `cloud_get("gcp", …)`.
 
-## 3. The seven qualities (the report's dimensions)
+## 3. The properties of a good change (the report's dimensions)
 
-Every report has a verdict per quality and findings under it. The lead
-instantiates and judges the qualities (§5.1); the specialists supply the
-facts.
+Changes cause incidents in a small number of ways. The program
+(`internal/agents/qualities.yaml`, §5.1) names nine properties a good
+change shows; each closes one of those ways. The report has a verdict
+per property. The lead instantiates and judges them; the specialists
+supply the facts.
 
-| Quality | The question | Evidence that answers it |
+| Property | The incident it prevents | What the change must show |
 |---|---|---|
-| **Correctness** | Does the change do what the PR says, and does the system around it let it? | the diff against the contract it relies on (signature, field semantics, validation, documented decisions, `buf breaking` against the base); a new dependency's onboarding (network policy, authorization, mesh membership); whether authentication, authorization and encryption in transit match the sensitivity of the data a new call carries; configuration and credentials present where the code runs; IAM and resource existence for cloud access |
-| **Compatibility** | Do old callers, old data and old callees still work against this, during rollout and after rollback? | wire compatibility of the contract; handling of absent or extra fields; data written by the old version read by the new and vice versa; mixed-version behaviour during a staged rollout |
-| **Blast radius** | What is the worst case if this is wrong, and does the rollout make it small? | instances per cluster and environment; callers and external exposure; what fails and whether it is contained; staged rollout with automatic analysis, per cluster; rollback without data migration; other open PRs on the same services |
-| **Scalability** | Can the system carry the load this adds or redirects? | added rate against current rate, in-flight work and p99; CPU and memory against limits; desired replicas and the autoscaler ceiling; internal versus external callers |
-| **Resilience** | Do service objectives hold when something fails? | deadlines and their propagation; retry budgets and amplification; bounded work; backpressure and load shedding; per-caller limits; what the caller sees when the callee is gone; disruption budgets and spread; hardening the change makes matter (probes, security standards, capabilities, limits); for infrastructure, how the provider applies the change and what a partial apply leaves |
-| **Debuggability** | If it does not have the intended effect, how would anyone know, and find out why? | signals on the new path (logs, metrics, traces); error wrapping and status codes; an alert on the new signal; a flag to turn it off; a runbook entry |
-| **Testability** | Is the behaviour, including its failure cases, proven and described? | unit tests for the new branches; end-to-end coverage of the call or resource; documented behaviour under failure |
+| **Correct** | It does not work in production: the call passes y where the contract says x; the backend now does z where the contract promises y; an onboarding step the platform requires (identity, authorization, network, mesh membership) was missed; configuration or permission is absent where the code runs | every contract, policy, configuration and permission it relies on is true where it will run |
+| **Reversible** | A rollback — of this change or of anything else — leaves data, schema or configuration the old version cannot work with; mixed versions disagree mid-rollout | old and new versions run side by side and in either order; nothing is a one-way door |
+| **Within budget** | It sends more load than a dependency can carry and the dependency's objectives are breached | every dependency it adds load to can carry it, under normal and abnormal traffic |
+| **Stable under failure** | A metastable failure: a dependency falters, the new client's retries multiply the load, and the system stays down after the cause is gone; or a call with no deadline hangs the caller | fails fast or degrades, sends no more load than before, recovers on its own |
+| **Progressively delivered** | A bad change reaches every user at once with nothing watching and no way back — or the environment provides staged delivery and this workload bypasses it | a meaningful worst case reaches production in judged stages with a halt and a migration-free rollback, on the paved road the environment provides |
+| **Available** | A routine event — drain, zone loss, bad pod — takes it out; or a hardening regression is rejected by admission or admitted and left waiting | disruption budget, spread, distinct probes, graceful shutdown, limits; the admission guardrails are satisfied |
+| **Secure** | Sensitive data moves without the protection it needs; a new permission is broader than the operation | authentication, authorization and encryption match the data's sensitivity; least privilege for new access |
+| **Observable** | It fails and nobody can tell, or tell why; the first sign is a user | signals on the new path, wrapped errors, an alert where it matters, an off switch |
+| **Proven** | It is wrong in a way a test would have caught | tests for the new behaviour and its failure cases, run for this change |
 
-"No impact on this quality, and here is why" is a finding, not an
-absence. Blast radius sets the weight of the others: a change whose worst
-case is trivial needs less proof, not none.
+"This change cannot open this path, and here is why" is a finding, not
+an absence. The worst case, established under *progressively delivered*,
+sets how much proof the others need: full when the worst case is
+meaningful, reduced when it is low — never none.
 
 ## 4. The journey
 
@@ -143,7 +156,7 @@ case is trivial needs less proof, not none.
 1. They open a PR. A required check named `impact` appears, in progress.
 2. A few minutes later, one of two things happens:
    - **The report lands.** The check completes with a verdict and a
-     comment summarizes the seven qualities. `info` passes, `warning`
+     comment summarizes the nine properties. `info` passes, `warning`
      passes with a visible note, `blocking` fails the check.
    - **A question lands.** The agent could not work out something it
      needs — most often, where the service runs. The check turns to
@@ -179,7 +192,7 @@ resolved), not plain issue comments.
 |---|---|---|
 | `impact — queued` | The controller received the PR event and is creating the session. | Session created. |
 | `impact — discovering` | Specialists are following the identifiers (or deriving them). | Discovery done, or an identifier could not be derived. |
-| `impact — assessing` | The lead is judging the seven qualities. | Report written. |
+| `impact — assessing` | The lead is judging the nine properties. | Report written. |
 | `impact — action required: pending human response` | A question is open. Merge is blocked. | A reply on the thread, or a commit to `.paved-agent/` on the PR branch, which re-queues; or someone other than the author resolves the thread, which waives it and re-queues. |
 | `impact — passed` / `passed with warnings` / `failed` | The report is attached and summarized. | A new push re-queues. |
 
@@ -207,7 +220,7 @@ deterministic code on either side:
    verification fails. Then the live facts that are never cached: who
    calls it today, its actual deployment configuration, the policies
    actually applied, traffic, alerts.
-3. **Grade.** For each instantiated quality, does it hold for this
+3. **Grade.** For each instantiated property, does it hold for this
    change, with what evidence; the result is posted as the PR comment and
    the check.
 
@@ -230,7 +243,7 @@ In more detail, six steps; the first and last are deterministic code.
    state, firing alerts — are the run memory. An identifier that returns
    nothing anywhere is treated as broken: derivation restarts, and the
    result is a proposal or a question.
-4. **Analysis.** The lead reasons through the seven qualities with the
+4. **Analysis.** The lead reasons through the nine properties with the
    diff, the contract, the author-stated documents the repository
    references, and the run memory. Where a dimension needs more evidence,
    it goes back to a specialist.
@@ -252,7 +265,7 @@ establish for each kind of change is its program, described next. The
 milestone-1 rules stay in the tree only until M2 measures whether a
 deterministic pre-pass saves enough tokens to keep.
 
-### 5.1 The program: qualities, instantiated per change
+### 5.1 The program: properties of a good change, instantiated per change
 
 The thesis (from `subbu-thoughts.md`): the system prompt and the tools,
 together with what the model already knows, are a programming language
@@ -266,17 +279,21 @@ not teach the model those. We tell it what a safe change *is*.
 So the lead's system prompt is not a narrative of steps, and it is not a
 catalogue of kinds of change either — kinds are open-ended, and a
 catalogue indexed by them is never finished. It is a short list of
-**qualities** every change must have. For each quality: a definition
-that does not depend on the change, guidance for **instantiating** it —
-deriving what the quality means for *this* diff — the **classes of
-evidence** that establish it, and the rules for **severity** and
-**weight**. The model derives the obligations; a stronger model derives
+**properties** a good change shows, each closing one way a change causes
+an incident. For each property: the **incident it prevents**, a
+definition that does not depend on the change, guidance for
+**instantiating** it — deriving what the property means for *this* diff
+— the **classes of evidence** that establish it, and the rules for
+**severity** and **proportionality**. The model derives the obligations; a stronger model derives
 them better against the same list; a human reads the list and amends it
 with a PR.
 
-The seven qualities are the report's seven dimensions (§3): correctness,
-compatibility, blast radius, scalability, resilience, debuggability,
-testability.
+The nine properties are the report's nine dimensions (§3): correct,
+reversible, within budget, stable under failure, progressively
+delivered, available, secure, observable, proven. Each is written from
+the incident it prevents, because that is how a reviewer at a cloud
+company actually thinks: not "is this high quality" but "how could this
+page someone".
 
 The lead's first act in every review is to write the instantiation —
 "for this change, correctness means …; the worst case is …, so rollout
@@ -624,7 +641,7 @@ procedure of generic steps, not as a table:
    intent, container names, chart structure, the control plane's own
    Deployments, and the shape of the metric labels that do exist. Only
    after that does it report "no mesh" — with the evidence that it looked.
-4. **Decide what each quality's question maps to here.** "Who calls this
+4. **Decide what each property's question maps to here.** "Who calls this
    service" is a mesh request metric by destination in one fleet, a
    network-flow metric in another, and intent-only in a third. The
    specialist writes that mapping down as part of the run memory, with
@@ -646,7 +663,7 @@ procedure of generic steps, not as a table:
    never seen — a custom control plane driving stock Envoy — is still
    identifiable from what Envoy itself exports and from the control
    plane's own manifests; the report names it by what the manifests call
-   it and maps the qualities' questions to the generic Envoy statistics
+   it and maps the properties' questions to the generic Envoy statistics
    or to intent only, and says which.
 6. **Form the queries and follow the identifiers.** Pods are the unit for
    counting instances regardless of workload kind; the owner chain
@@ -698,20 +715,20 @@ empty. No manifest changes. `discover.yaml` exists.
   also a new retry path.
 - Instantiation: worst case is every `hello` request from `frontend`
   returning an error — contained to one RPC, one caller; weight medium.
-- **Correctness:** warning —
+- **Correct:** warning —
   the proto does not declare `name` required and `frontend` forwards user
   input unchecked, so empty names become `InvalidArgument` surfaced to
   users; either document it in the proto or validate in `frontend`.
-  **Compatibility:** info — no wire change; old `frontend` builds simply
-  see a new error code. **Blast radius:** warning — 3 clusters, 1
+  **Reversible:** info — no wire change; old `frontend` builds simply
+  see a new error code. **Progressively delivered:** warning — 3 clusters, 1
   internal caller, staged rollout with analysis in staging and prod, none
-  in dev. **Scalability:** info — no load change; `frontend` does not retry on
+  in dev. **Within budget:** info — no load change; `frontend` does not retry on
   `InvalidArgument` (its retry policy covers `UNAVAILABLE` only), so a
   burst of empty names cannot amplify; `hello` has a per-caller admission
-  limit as a backstop. **Resilience:** info — the canary's analysis counts
+  limit as a backstop. **Stable under failure / available:** info — the canary's analysis counts
   `InvalidArgument` as a client error, so it would not roll back on it;
-  said so. **Debuggability:** info — the status code is counted by the
-  platform's interceptor; no alert on it, none needed. **Testability:**
+  said so. **Observable:** info — the status code is counted by the
+  platform's interceptor; no alert on it, none needed. **Proven:**
   warning — the handler test covers the new branch; no test in `frontend`
   for the error it now receives.
 - Questions: none. Proposals: none.
@@ -734,21 +751,21 @@ calls `GetBalance` per page view. `service.yaml` untouched.
   Reads `ledger`'s `service.yaml`: `frontend` not in `authorizedCallers`.
 - Instantiation: worst case is every page view failing or slowing when
   `ledger` does — total for `frontend`'s users; weight full.
-- **Correctness:** blocking —
+- **Correct:** blocking —
   `frontend`'s `egress` lacks `ledger` and `ledger` does not authorize
   `frontend`; the platform's access-request flow is the fix; the e2e
-  would fail. **Compatibility:** info — `GetBalance` is stable; the
-  client is generated from the deployed proto. **Blast radius:** warning
+  would fail. **Reversible:** info — `GetBalance` is stable; the
+  client is generated from the deployed proto. **Progressively delivered:** warning
   — every page view now depends on `ledger`; no other open PR touches
-  `ledger`; the rollout is staged. **Scalability:** blocking — +250% against a ceiling of 3 replicas
+  `ledger`; the rollout is staged. **Within budget:** blocking — +250% against a ceiling of 3 replicas
   already at 70% CPU and 75% of the in-flight threshold; an external
   caller now drives load into an internal service with no per-caller
   limit on `ledger`'s side; and if `ledger` starts returning `UNAVAILABLE`,
   two mesh retries per page view triple the load at the worst moment.
-  **Resilience:** blocking — no deadline; no fallback when `ledger` is
-  down, so a `ledger` outage is a `frontend` outage. **Debuggability:**
+  **Stable under failure / available:** blocking — no deadline; no fallback when `ledger` is
+  down, so a `ledger` outage is a `frontend` outage. **Observable:**
   warning — the call is instrumented by the platform's client interceptor
-  but the handler swallows the error into a 500 without wrapping. **Testability:** warning — no test for `ledger` unavailable or slow.
+  but the handler swallows the error into a 500 without wrapping. **Proven:** warning — no test for `ledger` unavailable or slow.
 - Questions: none. Proposals: none (callers and callees are derived, not
   recorded).
 - Verdict: blocking. Cost estimate: $1.5–2.5.
@@ -772,11 +789,11 @@ Diff: `internal/export/gcs.go` writes daily exports to the bucket named by
   no deletion protection.
 - Instantiation: worst case is the export never running — a scheduled
   path, no request impact; weight low, except correctness.
-- **Correctness:** blocking — config absent at runtime; no credential
-  path; no IAM grant. **Compatibility:** info. **Blast radius:** info — 3
-  clusters, a scheduled path. **Scalability:** info. **Resilience:** warning — no timeout on the upload; no
-  retry; a 2 GB export streamed from memory. **Debuggability:** warning —
-  errors logged without the bucket or object name. **Testability:**
+- **Correct:** blocking — config absent at runtime; no credential
+  path; no IAM grant. **Reversible:** info. **Progressively delivered:** info — 3
+  clusters, a scheduled path. **Within budget:** info. **Stable under failure / available:** warning — no timeout on the upload; no
+  retry; a 2 GB export streamed from memory. **Observable:** warning —
+  errors logged without the bucket or object name. **Proven:**
   warning — no test for the upload failing.
 - Verdict: blocking. Cost estimate: $1.5–2.5 across the two runs.
 
@@ -798,7 +815,7 @@ Diff: any handler change in `greeter`. No `.paved-agent/`.
 - The lead reads the diff: behaviour-preserving, tests unchanged and
   passing in CI. Discovery follows `echo`'s identifiers (cheap) so the
   report still states where it runs.
-- Verdict: info, seven qualities "no impact" with the reason. Cost: under
+- Verdict: info, nine properties "no impact" with the reason. Cost: under
   $0.3. This case keeps the cheap path cheap.
 
 ## 9. Connectors and tools
@@ -978,7 +995,7 @@ of this design rather than being a second system.
 cmd/change-agent      setup | review | worker | proxy
 deploy/               kind manifests: sandbox and proxy Deployments, NetworkPolicy, Service
 internal/change       the change (exists)
-internal/findings     report contract: seven qualities, findings, unknowns, questions, proposals
+internal/findings     report contract: nine properties, findings, unknowns, questions, proposals
 internal/identifiers  .paved-agent/discover.yaml: schema, load, lint (identifiers only)
 internal/proxy        the HTTP service: slots, adapters, policy, audit, config, repo tarballs;
                       and the controller (PR events, sessions, check states, collect)
@@ -1028,23 +1045,25 @@ There is no separate learning step: nothing else is learned.
 {"change":"org/repo#N@sha",
  "instantiation":{"worst_case":"…","weight":"full",
                   "obligations":[{"quality":"correctness","establish":"…"}]},
- "qualities":{
-   "correctness":{"verdict":"blocking","summary":"…"},
-   "compatibility":{"verdict":"info","summary":"…"},
-   "blast_radius":{"verdict":"warning","summary":"…"},
-   "scalability":{"verdict":"blocking","summary":"…"},
-   "resilience":{"verdict":"blocking","summary":"…"},
-   "debuggability":{"verdict":"warning","summary":"…"},
-   "testability":{"verdict":"warning","summary":"…"}},
+ "properties":{
+   "correct":{"verdict":"blocking","summary":"…"},
+   "reversible":{"verdict":"info","summary":"…"},
+   "within_budget":{"verdict":"blocking","summary":"…"},
+   "stable_under_failure":{"verdict":"blocking","summary":"…"},
+   "progressively_delivered":{"verdict":"warning","summary":"…"},
+   "available":{"verdict":"info","summary":"…"},
+   "secure":{"verdict":"info","summary":"…"},
+   "observable":{"verdict":"warning","summary":"…"},
+   "proven":{"verdict":"warning","summary":"…"}},
  "discovery":{"followed":["workloads[0]"],"broken":[],
               "by_env":{"prod":{"clusters":["prod-us","prod-eu"],"instances":4,"rps":4.8,
                                 "callers":["frontend"],"external":false,"owner":"Rollout","ceiling":4}},
               "cpu_of_limit":{"prod-us":0.12}},
- "findings":[{"quality":"scalability","severity":"blocking","claim":"…",
+ "findings":[{"property":"within_budget","severity":"blocking","claim":"…",
    "evidence":[{"kind":"metric","source":"metrics.query","query":"…","value":"…"}],
    "recommendation":"…","confidence":0.85,"studied":["frontend","ledger"]}],
- "unknowns":[{"what":"…","tried":["…"],"blocks":["blast_radius","scale"]}],
- "questions":[{"id":"q1","text":"…","blocks":["blast_radius","scale"],
+ "unknowns":[{"what":"…","tried":["…"],"blocks":["progressively_delivered","within_budget"]}],
+ "questions":[{"id":"q1","text":"…","blocks":["progressively_delivered","within_budget"],
                "answers":{"yes":{"path":".paved-agent/discover.yaml","content":"…"},
                           "no":{"path":".paved-agent/discover.yaml","content":"…"}},
                "waived_by":null}],
@@ -1059,12 +1078,12 @@ writes to git directly.
 
 | Agent | Model | Connector access | Owns |
 |---|---|---|---|
-| lead | claude-opus-5, effort high | sandbox tools, `change_diff`, `scm.open_prs`, `metrics.rules`, `alerts`, `ask`, `propose`; may delegate to the three below | reading the code, deciding what to discover, judging the seven qualities, questions, proposals, the report |
+| lead | claude-opus-5, effort high | sandbox tools, `change_diff`, `scm.open_prs`, `metrics.rules`, `alerts`, `ask`, `propose`; may delegate to the three below | reading the code, deciding what to discover, judging the nine properties, questions, proposals, the report |
 | org finder | claude-sonnet-5 | `scm.search_code`, `scm.mount`, sandbox tools | finding and mounting the defining repository |
 | topology discoverer | claude-sonnet-5 | sandbox tools, `metrics`, `logs` | stack discovery; following and deriving workload identifiers; placement, scale inputs, exposure, identity, configuration presence |
 | cloud discoverer | claude-sonnet-5 | `cloud_get` | following cloud references; identity and IAM |
 
-The seven-quality judgment is done by the lead itself in M2, in one
+The nine-property judgment is done by the lead itself in M2, in one
 context that holds all the facts. The specialists are unaffected by that
 choice: they discover; they do not judge. If reports get long or slow,
 the judgment can be split into per-dimension analysts fed by the lead's
@@ -1154,7 +1173,7 @@ damage of a runaway loop — per run, per CI run, per month.
   NetworkPolicy; environment E1 of the evaluation plan; hand-written
   identifiers for the fixture repos; fixtures P2, P4, P7, P8. Exit: the
   discovered stack for E1 matches its known architecture with evidence;
-  P4 reviewed with seven qualities; P7 asks exactly one question and
+  P4 reviewed with nine properties; P7 asks exactly one question and
   passes after the file lands; P8 under $0.3; derivation matches the
   hand-written files.
 - **M3 — cross-stack.** Environments E4, E2, E3 of the evaluation plan;
@@ -1219,14 +1238,16 @@ until there are enough production-derived ones to run it unattended.
 
 ## 16. Decided
 
-1. Seven qualities: blast radius, correctness, scale, resilience,
-   debuggability, test coverage.
+1. Nine properties of a good change, each named for the incident it
+   prevents, instantiated per change rather than a catalogue of kinds:
+   correct, reversible, within budget, stable under failure,
+   progressively delivered, available, secure, observable, proven.
 2. Author-stated invariants are enforced from the referenced docs;
    agent-inferred ones are derived at review time from similar code in
    the same repository and never stored.
 3. Bash is on inside the kind-deployed sandbox pod; the NetworkPolicy,
    the absence of credentials and the pod's hardening are the boundary.
-4. The seven-quality judgment is the lead's job in M2; the specialists
+4. The nine-property judgment is the lead's job in M2; the specialists
    discover and do not judge.
 5. No profiles, no capability probe, no table of products anywhere in the
    code. The model discovers a service's stack from generic connectors
@@ -1244,10 +1265,9 @@ until there are enough production-derived ones to run it unattended.
 2. **Discovery cost ceiling.** How many connector calls and how much of
    the budget may stack discovery spend per run before the specialist
    must stop and report what it has? Proposed: 25 calls and $0.25.
-5. **The qualities file** (§5.1) shows two of seven entries. Before M2's
-   prompts are written, all seven — definitions, instantiation guidance,
-   evidence classes, severity and weight — are the thing to review most
-   carefully; it is the program.
+5. **The program** is now written in full at
+   `internal/agents/qualities.yaml` (nine entries). It is the thing to
+   review most carefully before the first live run.
 3. **Multiple proxies.** When prod is its own trust boundary, the
    controller fans one discovery out to several proxies and merges by
    cluster. Fine to leave this out of M2 and run one proxy over all
