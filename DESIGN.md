@@ -1025,6 +1025,12 @@ monthly total and refuses past the cap.
 
 ## 13. Test plan
 
+The live evaluation is a matrix of four kind environments (Istio + Argo,
+Linkerd + Flux, Istio ambient + plain CI, no mesh) by ten pull requests,
+with expected findings per cell and discovery expectations per
+environment: [evals/PLAN.md](evals/PLAN.md). The layers below are how
+that matrix and the deterministic parts are exercised.
+
 | Layer | What | How | Pass |
 |---|---|---|---|
 | Unit | no product names in any rendered prompt (denylist test); identifier schema and lint; capability probe → profile selection; profile query rendering; owner-kind resolution (Rollout, Deployment, StatefulSet, DaemonSet, unknown); external-exposure detection; report validation; check-state transitions; proxy policy (read-only methods, path restriction on `propose`, limits) | `go test` | green |
