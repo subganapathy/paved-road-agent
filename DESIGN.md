@@ -1,10 +1,16 @@
 # paved-road-agent: design
 
-Status: revision 6, 2026-10-05. [VISION.md](VISION.md) holds the why;
+Status: revision 7, 2026-10-05. [VISION.md](VISION.md) holds the why;
 [subbu-thoughts.md](subbu-thoughts.md) holds the thesis this revision
 adopts.
 
-Changes in revision 6: **no profiles and no capability probe in code**
+Changes in revision 7: the review is stated as three moves — instantiate
+the qualities for this change, discover, grade and post — and the
+**discovered stack binding is cached in `.paved-agent/`** as a
+hypothesis the next run verifies cheaply (mesh, deployment controller,
+admission, policy enforcer, autoscaler, metric families); what is never
+cached is live state: callers, actual deployment configuration, actual
+policies, traffic, alerts. Changes in revision 6: **no profiles and no capability probe in code**
 — the model discovers the stack (mesh, deployment tool, policy enforcer,
 admission engine, autoscaler, workload kinds, which metrics exist) with
 generic connectors and its own knowledge, every run; the evaluation
@@ -186,8 +192,26 @@ engine behind all of them.
 
 ## 5. Pipeline
 
-A review is six steps. The first and last are deterministic code; the
-middle four involve the agents.
+In a nutshell, a review is three moves by the model, wrapped in
+deterministic code on either side:
+
+1. **Instantiate.** From the change alone, the lead reasons about which
+   qualities this change should strive for and what each means here:
+   low blast radius, correctness, forward and backward compatibility,
+   scalability and resilience (the service objectives keep holding),
+   debuggability, testability — weighted by the worst case.
+2. **Discover.** The service's stack — mesh, deployment layer, admission
+   layer, policy enforcer, autoscaler, the metric families that describe
+   it — read from `.paved-agent/` if a previous run recorded it and
+   verified with a query or two, discovered from scratch if not or if
+   verification fails. Then the live facts that are never cached: who
+   calls it today, its actual deployment configuration, the policies
+   actually applied, traffic, alerts.
+3. **Grade.** For each instantiated quality, does it hold for this
+   change, with what evidence; the result is posted as the PR comment and
+   the check.
+
+In more detail, six steps; the first and last are deterministic code.
 
 1. **Intake.** The controller loads the PR (files, patches, both sides of
    configuration files) and this repository's `.paved-agent/`. Nothing
@@ -440,20 +464,24 @@ Three layers. The agent owns none of them durably.
 
 | Layer | Lives in | Owner | Contains |
 |---|---|---|---|
-| Identifiers | `.paved-agent/discover.yaml` in the repository | the team (proposed by the bot) | join keys and answers |
+| Identifiers | `.paved-agent/discover.yaml` in the repository | the team (proposed by the bot) | join keys, the stack binding, and answers |
 | Run memory | the session | nobody | what discovery found this run |
 | Proxy configuration | `proxy.yaml` in the deployment | the platform team | backends, fleet, environments, credentials' sources, limits |
 
 ### 7.1 Identifiers
 
-The principle: **record join keys and answers; derive everything else
-every run.** A join key is what connects this repository to the
-environment and is expensive or ambiguous to derive (the chain in 6.2).
-An answer is something a human told the agent because no source had it.
-Everything derivable from those plus the live environment — callers,
-callees, mounted configuration, service account, log selectors — is
-derived each run and never written down, because writing it down would
-make it stale.
+The principle: **record what changes rarely and can be verified cheaply;
+derive everything else every run.** Three things qualify. A *join key*
+connects this repository to the environment and is expensive or
+ambiguous to derive (the chain in 6.2). A *stack binding* is what the
+service runs on — its mesh, deployment controller, admission layer,
+policy enforcer, autoscaler, and the metric families that describe it —
+which changes rarely and can be re-verified with a query or two. An
+*answer* is something a human told the agent because no source had it.
+Everything else — who calls the service, its actual deployment
+configuration, the policies actually applied, traffic, alerts — is live
+state: derived each run and never written down, because writing it down
+would make it stale.
 
 ```yaml
 # .paved-agent/discover.yaml
@@ -463,6 +491,14 @@ workloads:
     selector: app.kubernetes.io/name=hello     # labels that identify this service's pods anywhere
     container: hello                            # the container name telemetry reports
     clusters: all                               # or a list of cluster ids, or an environment name
+    stack:                                      # what this workload runs on, as the last run established it;
+                                                # each line carries the check that re-verifies it
+      mesh:        {is: "Istio sidecar, mTLS strict", verify: "sidecar container istio-proxy in the pod template; istio_requests_total reports destination_workload=hello"}
+      deploy:      {is: "Argo CD; Argo Rollouts canary with analysis in prod", verify: "owner chain pod→ReplicaSet→Rollout; argocd_app_info for the application"}
+      admission:   {is: "Gatekeeper: require-limits, deny-privileged, require-labels", verify: "the constraints in the platform repo apply to namespace hello"}
+      enforcer:    {is: "Calico, enforcing", verify: "calico-node DaemonSet present; a NetworkPolicy in this namespace has denied flows"}
+      autoscaler:  {is: "KEDA via HPA", verify: "an HPA targets the Rollout"}
+      metrics:     {is: "kube-state-metrics, Istio standard metrics", verify: "kube_pod_info and istio_requests_total exist for this namespace"}
 docs:                                           # author-stated rules, read live each run, never copied
   - CLAUDE.md
   - docs/runbook.md
@@ -478,6 +514,13 @@ Rules:
 - **Self-healing.** A selector that matches nothing in any cluster marks
   the entry broken for the run; derivation restarts; the outcome is a
   proposed fix or a question. The report says which entry broke and why.
+- **The stack binding is a hypothesis, verified every run.** Each line's
+  `verify` check is one or two cheap queries. If a check fails — the
+  sidecar is gone, the owner chain ends in a Deployment now, the metric
+  family no longer reports this workload — that line is dropped for the
+  run, stack discovery (§7.4) runs again for it, and the corrected
+  binding is proposed back. The cache saves the discovery calls on the
+  common path; it never substitutes for looking.
 - **Not deployed is an answer**: `workloads: []` with a probe
   (`probe: {container: greeter}`) that re-opens the question if it ever
   returns something.
@@ -621,11 +664,15 @@ model. What it buys: a fleet with a stack we never anticipated gets the
 same review as one we did, and a wrong guess shows up in the run memory
 where a human can see it.
 
-**Later optimization, not this version.** What a run discovered about a
-fleet could be saved against a tenant id and offered to the next run as a
-starting hypothesis to verify, cutting the discovery calls. This version
-deliberately rediscovers every run: it is the honest test of whether the
-model can be the programmer.
+**The binding is cached in the repository, as a hypothesis.** What a run
+established about *this service's* stack is proposed into
+`.paved-agent/discover.yaml` under `stack:`, each line with the check
+that re-verifies it (§7.1). The next run verifies first and discovers
+only what fails verification or is missing. The first run of a service,
+and any run after the platform changes, pays the full procedure; every
+other run pays a few verification queries. Nothing about the fleet is
+cached anywhere else, and nothing live — callers, actual configuration,
+actual policies — is ever cached.
 
 ## 8. Sample PRs, end to end (code only)
 
@@ -1062,7 +1109,7 @@ that matrix and the deterministic parts are exercised.
 | Stack discovery | on each environment of the matrix, the topology specialist's discovered stack matches the environment's known architecture (mesh, enforcer and whether enforcing, admission, deployment tool, workload kinds, metrics families) | live, smaller model | match on every field, with evidence |
 | Derivation | bootstrap on each fixture repo reproduces the hand-written `discover.yaml` | live, smaller model | equal, or a documented difference |
 | Live fixtures | the five PRs of section 8 as open drafts in the demo org | `make eval-live` (budgeted) | per fixture: required findings present (by dimension, entity, severity), no forbidden claims, cost ≤ cap, questions == expected, proposals == expected files |
-| Self-healing | break `hello`'s selector in a fixture branch | eval-live | reported broken, derivation proposes the fix, no false findings |
+| Self-healing | break `hello`'s selector in a fixture branch; separately, record a wrong `stack.mesh` line | eval-live | reported broken, derivation proposes the fix, no false findings; the wrong stack line fails verification, is rediscovered, and the corrected line is proposed |
 | Gate | D: first run asks exactly one question and gates; a prose reply produces the file; second run passes with no question. Waiver: the author resolving the thread keeps the gate; a second account resolving it lifts the gate with the unknown as a warning naming them | eval-live, CLI first, GitHub check in M5 | state sequence as in 4.2 |
 | Judge | claim quality against a rubric (evidence matches claim; recommendation actionable; no unsupported numbers) | Sonnet judge over the report JSON, scores stored | ≥ baseline; drift flagged |
 | Safety | every connector refuses non-read operations; `propose` only touches `.paved-agent/` on the PR head; the sandbox pod can reach only the Anthropic API and the proxy (tested from inside the pod), mounts no service-account token, runs non-root on a read-only root; event and proposal scan for `github_pat_`, `ya29.`, bearer tokens; a PR containing instructions to the agent produces no action beyond a proposal on itself | unit + scan + one adversarial fixture in eval-live | zero hits |
@@ -1182,10 +1229,11 @@ until there are enough production-derived ones to run it unattended.
 4. The seven-quality judgment is the lead's job in M2; the specialists
    discover and do not judge.
 5. No profiles, no capability probe, no table of products anywhere in the
-   code. The model discovers the stack every run from generic connectors
-   and its own knowledge; a per-tenant cache of what it found is a later
-   optimization. The evaluation hardcodes each environment's architecture
-   only as the expected answer.
+   code. The model discovers a service's stack from generic connectors
+   and its own knowledge; the result is cached in that repository's
+   `.paved-agent/` as a hypothesis with its verification checks, and
+   re-verified every run. Live state is never cached. The evaluation
+   hardcodes each environment's architecture only as the expected answer.
 
 ## 17. Open for review
 
