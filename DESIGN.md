@@ -1,16 +1,19 @@
 # paved-road-agent: design
 
-Status: revision 4, 2026-10-04. [VISION.md](VISION.md) holds the why.
+Status: revision 5, 2026-10-05. [VISION.md](VISION.md) holds the why;
+[subbu-thoughts.md](subbu-thoughts.md) holds the thesis this revision
+adopts.
 
-Changes in this revision, from the deep review: a vocabulary section;
-every diagram now has the prose explanation first; the repository file
-shrinks to join keys and answers (callers, config and cloud references
-are derived every run, not recorded); the metrics stack is detected by a
-capability probe rather than assumed; environments (dev, staging, prod)
-are first-class in the proxy's fleet; scale and resilience account for
-external callers and retry amplification; a hosted service is a later
-goal, not a non-goal; open items are written in plain language and the
-agreed ones moved to "Decided".
+Changes in this revision: the agent's program is stated as **obligations**
+— what must be established for each kind of change, what evidence
+establishes it, and what it costs when it cannot be — rather than as
+prose instructions (§5.1); the minimal library is three connectors
+(metrics, source control, logs), with cloud deferred and alerts folded
+into metrics (§9); data protection, deployment hardening and infra apply
+semantics join the obligations; and a section on how the agent improves
+(§15). Revision 4 added the vocabulary, prose-first diagrams, join keys
+and answers, the capability probe, environments, retry amplification and
+the hosted path.
 
 ## 1. The model in one paragraph
 
@@ -54,12 +57,18 @@ Terms as they are used in the rest of this document.
 | **Proposal** | A change to `.paved-agent/` the agent wants made, applied by the proxy as a commit or a suggested change. |
 | **Check** | The GitHub status on the PR (`impact`) that carries the verdict and gates merge. |
 | **Fixture** | A sample PR with a known expected outcome, used as a live test. |
+| **Obligation** | One thing a review must establish for a given kind of change, with the evidence that establishes it and the severity when it cannot be. The agent's program is a catalogue of these. |
 
 ## 2. Goals, non-goals, assumptions
 
 Goals
 
-- Any PR, including pure code changes with no manifest in the diff.
+- Any production modification that arrives as a PR: code, Kubernetes
+  manifests, cloud infrastructure (Terraform, Pulumi, Crossplane), dynamic
+  configuration — including pure code changes with no manifest in the diff.
+- The agent's program is a reviewable specification — obligations and
+  evidence rules — not prose. A stronger model runs the same program
+  better; a human can read and amend it.
 - Findings with evidence: a metric, a file and line, a cloud API response,
   or a human's answer. Never an unsupported claim.
 - Stateless: nothing persists outside the repository under review.
@@ -94,9 +103,9 @@ judges the dimensions; the specialists supply the facts.
 | Dimension | The question | Evidence that answers it |
 |---|---|---|
 | **Blast radius** | Where does the changed code run, who depends on it, and what is the worst case if it is wrong? | instances per cluster and environment; traffic and callers per cluster; whether the service is reachable from outside the cluster; rollout staging (per-cluster canary or global); feature flags; other open PRs' assessed impact on the same services |
-| **Correctness** | Does the change do what the PR says, honour its contract, and work where it runs? | the diff against the proto/API contract (field semantics, validation rules, `buf breaking` against the base); the author-stated docs it references; config keys and credentials present in the pod template for each cluster; IAM and resource existence for cloud access |
+| **Correctness** | Does the change do what the PR says, honour its contract, and work where it runs? | the diff against the proto/API contract (field semantics, validation rules, `buf breaking` against the base) and the ADRs or docs it references; a new dependency's onboarding (network policy, authorization, mesh membership); whether authentication, authorization and encryption in transit match the sensitivity of the data a new call carries; config keys and credentials present in the pod template for each cluster; IAM and resource existence for cloud access |
 | **Scale** | Can the system carry the load this change adds or redirects, including the load it would see when things go wrong? | added rps from new callers against the callee's current rps, in-flight work and p99; CPU and memory against limits; desired replicas and the autoscaler ceiling; whether callers are internal (known rps) or external (unbounded, possibly adversarial); **retry amplification**: if this service starts failing, do its callers' retry policies multiply the load; server-side rate limiting and per-tenant isolation as the defence |
-| **Resilience** | Does it fail small and recover? | deadlines and their propagation; retry sanity (idempotency, budgets, backoff); bounded work; backpressure and load shedding; canary with analysis; PDB and spread; rollback without data migration |
+| **Resilience** | Does it fail small and recover? | deadlines and their propagation; retry sanity (idempotency, budgets, backoff); bounded work; backpressure and load shedding; canary with analysis — and for a critical fix, whether the service *has* a staged rollout at all; PDB and spread; rollback without data migration; hardening gaps in the deployment that the change makes matter (probes, PSS, capabilities, limits); for infrastructure, how the provider applies the change (replace = delete then create) and what a partial apply leaves behind |
 | **Debuggability** | When it fails, can an operator tell, and where? | logs/metrics/traces on the new path; error wrapping and status codes; whether the new signal has an alert rule; a flag to turn it off; a runbook entry |
 | **Test coverage** | Is the behaviour, including its failure cases, proven and described? | unit tests for the new path and its error branches; e2e coverage of the call or resource; documented behaviour under failure (what the caller sees, what the operator sees) |
 
@@ -189,11 +198,99 @@ middle four involve the agents.
                                  istic)        dimensions)  comment)    suggestion)
 ```
 
-What the lead looks for in each kind of change — a new client, a cloud
-SDK import, a Dockerfile, a handler, a proto, a Terraform plan — is
-written as guidance in its system prompt. There is no rule engine in
-front of the model. The milestone-1 rules stay in the tree only until M2
-measures whether a deterministic pre-pass saves enough tokens to keep.
+There is no rule engine in front of the model. What the lead must
+establish for each kind of change is its program, described next. The
+milestone-1 rules stay in the tree only until M2 measures whether a
+deterministic pre-pass saves enough tokens to keep.
+
+### 5.1 The program: obligations, not instructions
+
+The thesis (from `subbu-thoughts.md`): the system prompt and the tools,
+together with what the model already knows, are a programming language
+for the domain. The domain here is *safe modification of production*. The
+assumptions — Kubernetes, and every change through source control —
+shrink the domain enough that the model's training covers the rest: the
+handful of ways a pod reaches a cloud, the few service meshes and their
+metrics, the few policy engines, the three infrastructure tools. We do
+not teach the model those. We tell it what must be *established*.
+
+So the lead's system prompt is not a narrative of steps. It is a
+catalogue: for each **kind of change**, a list of **obligations**; for
+each obligation, the **evidence** that discharges it, the **connector**
+that yields the evidence, and the **severity** when it cannot be
+discharged. The model plans how to get there. A stronger model plans
+better against the same catalogue; a human reads the catalogue and
+amends it with a PR.
+
+The catalogue is a file (`internal/agents/obligations.yaml`) rendered
+into the prompt, so it is reviewed, versioned and evaluated like code.
+An excerpt, for the kind *new dependency on a service*:
+
+```yaml
+kind: new-call
+  trigger: the diff constructs a client for, or starts sending requests to, a service it did not before
+  obligations:
+    - id: contract
+      establish: the call is contractually valid — the callee's current proto has the method,
+                 the fields sent exist with the meaning the caller assumes
+      evidence: the callee's proto at its deployed revision (scm), the call site (sandbox)
+      if_not: blocking
+    - id: onboarding
+      establish: the caller is allowed to reach and call the callee — network policy, authorization
+                 policy, mesh membership — in every cluster where both run
+      evidence: the callee's and caller's policies in the intent (scm); the mesh's view of who may call (metrics)
+      if_not: blocking
+    - id: data-protection
+      establish: authentication, authorization and encryption in transit match the sensitivity of
+                 the data the call carries (judge sensitivity from the proto fields: identifiers,
+                 financial, health, credentials)
+      evidence: the mesh mode (mTLS strict or not) and the authorization policy's granularity (scm, metrics)
+      if_not: blocking for sensitive data, warning otherwise
+    - id: capacity
+      establish: the callee can carry the added load — new rps against current rps, in-flight work
+                 and p99; CPU and memory per replica against limits; desired replicas and the ceiling;
+                 estimate the replicas needed at the new load
+      evidence: the profile's queries for the callee (metrics)
+      if_not: blocking if the estimate exceeds the ceiling, warning if it exceeds desired
+    - id: retry-amplification
+      establish: if the callee starts failing, the caller's retry policy and the mesh's defaults do
+                 not multiply the load; the callee limits per-caller load
+      evidence: the call site and client config (sandbox), VirtualService retries (scm), server-side limits (scm)
+      if_not: warning; blocking if the caller is reachable from outside the cluster
+    - id: deadline
+      establish: the call carries a deadline shorter than the caller's own, and a fallback or a
+                 clear failure when the callee is down
+      evidence: the call site (sandbox)
+      if_not: blocking without a deadline, warning without a fallback
+    - id: observability
+      establish: the call is counted, timed and traced, and its errors are wrapped with context
+      evidence: the call site and the interceptors in use (sandbox)
+      if_not: warning
+    - id: tests
+      establish: the new path and its failure cases (unavailable, slow, denied) are tested
+      evidence: the test files touched (sandbox)
+      if_not: warning
+```
+
+Other kinds in the catalogue, each with its own obligations: *business
+logic change* (contract and ADR consistency; whether a critical fix has a
+staged rollout to ride on; which callers' inputs reach the changed
+branch), *Kubernetes manifest change* (hardening gaps the change makes
+matter: probes, PDB, spread, Pod Security Standard, capabilities,
+limits), *cloud resource access from code* (a credential path exists for
+the pod; IAM grants the role; the resource exists and is protected),
+*infrastructure change* (quota at maximum scale; apply semantics —
+replace means delete then create; what a partial apply leaves; plan
+versus the PR's description), *dynamic configuration change* (who reads
+it, when it takes effect, whether it can be reverted without a deploy).
+
+Obligations map onto the six dimensions for the report, but the program
+is written per kind of change because that is how a reviewer thinks: "it
+is a new call, so I must establish these eight things."
+
+The specialists have the same shape in miniature: each has a system
+prompt saying what facts it returns and from which connector, not how to
+reason about them.
 
 ## 6. Specialists and the questioner
 
@@ -589,17 +686,32 @@ Diff: any handler change in `greeter`. No `.paved-agent/`.
 ## 9. Connectors and tools
 
 Everything the agent can do outside the sandbox is a connector call
-through the proxy. Five slots, one closed interface each.
+through the proxy. The question is the smallest library the language
+needs. Given Kubernetes and source control, the answer is three:
 
 | Slot | Operations | Bound to (examples) | Read / write |
 |---|---|---|---|
-| `metrics` | `query`, `query_range`, `series`, `label_values`, `rules` | Prometheus, Thanos, Mimir, AMP, GMP, Victoria; (later) Datadog, Cloud Monitoring via adapters | read |
-| `logs` | `search(selector, query, range)` → bounded lines | Loki, Cloud Logging, CloudWatch Insights, OpenSearch | read |
-| `alerts` | `firing(selector)`, `incidents(service, range)` | Alertmanager, PagerDuty | read |
+| `metrics` | `query`, `query_range`, `series`, `label_values`, `rules` — firing alerts come from `ALERTS` and alert rules from the rules API, so there is no separate alerts slot | Prometheus, Thanos, Mimir, AMP, GMP, Victoria; (later) Datadog, Cloud Monitoring via adapters | read |
 | `scm` | `search_code`, `read(repo, ref, path)`, `mount(repo, ref)`, `pr(…)`, `open_prs`, `comment_replies` | GitHub, GitLab | read; writes: `comment`, `check`, `propose` (`.paved-agent/` on the PR branch only) |
-| `cloud` | `cloud_get(provider, resource, attribute)` with attributes `exists`, `iam`, `quota`, `protection`, `bindings`, `labels` | GCP, AWS adapters | read; credentials via workload identity federation |
+| `logs` | `search(selector, query, range)` → bounded lines | Loki, Cloud Logging, CloudWatch Insights, OpenSearch | read |
 
-A sixth slot, `traces`, is planned for debuggability.
+Why these three suffice for most obligations: under the source-control
+assumption, *intent* for everything — manifests, policies, IAM bindings
+in Terraform or Crossplane, dynamic configuration — is readable through
+`scm`; *actual* state of the fleet is readable through `metrics`; and
+*behaviour* is readable through `logs`. The model already knows how
+clouds are reached from Kubernetes, how meshes expose traffic, how
+policy engines express rules; it needs the facts, not the lessons.
+
+Two more slots come later, when an obligation needs actual-versus-intent
+outside the cluster:
+
+| Slot | Operations | When |
+|---|---|---|
+| `cloud` | `cloud_get(provider, resource, attribute)` — `exists`, `iam`, `quota`, `protection`, `bindings` | M4: the cloud resource obligations, where intent in Terraform is not enough (drift, quotas, protection flags) |
+| `incidents` | `incidents(service, range)` from PagerDuty or similar | with the improvement loop (§15): correlating passed PRs with what broke |
+
+A `traces` slot remains possible for debuggability.
 
 Inside the sandbox the agent has `read`, `glob`, `grep` and `bash` over
 the mounted repositories. Bash is on because the sandbox is a pod whose
@@ -857,7 +969,55 @@ re-runs the fixtures and diffs the judge scores before it is merged.
   with prose answers turned into commits, opt-in bot commits. Then Slack
   notifications linking back to the PR.
 
-## 15. Decided
+## 15. How the agent improves
+
+"Self-learning" means four different things here, in increasing order of
+ambition. The first exists; the second and third are what the milestones
+build toward; the fourth is a research question we do not claim to solve.
+
+1. **Learning the environment.** Identifiers in `.paved-agent/`, answers
+   to questions, the capability probe. The agent learns *facts*; the
+   program does not change. This is what §7 describes.
+
+2. **Improving the program through evaluation.** The program is text and
+   code under version control: the obligations catalogue, the system
+   prompts, the profiles. A change to it is a PR, and the fixtures plus
+   the judge are its test suite. That makes the ordinary engineering loop
+   available — propose a change, run the evals, keep it if the scores
+   rise — and it makes the loop automatable: a session whose task is "the
+   review of fixture B missed retry amplification; propose the smallest
+   change to the catalogue that catches it without regressing the others"
+   can open that PR itself. Humans merge. Managed Agents' *outcomes*
+   (a grader iterating an agent against a rubric) is a platform primitive
+   for exactly this loop.
+
+3. **Learning from what happened.** Every review produces signals we can
+   capture: a human dismissed a finding (false positive), a human added a
+   point the agent missed (false negative), a question's answer, and —
+   with the `incidents` slot — a PR the agent passed that was later
+   implicated in an incident. Each becomes a fixture: the PR, the
+   environment snapshot from the run's `discovery` block, the expected
+   outcome. The eval set grows from production, and loop 2 runs against
+   it. This is the flywheel: outcomes → fixtures → program changes →
+   gated by the fixtures. The agent that reviews PRs improves by the same
+   PR loop it reviews.
+
+4. **Learning new capabilities.** When a fixture fails because the
+   program *cannot* express the fix — a metrics dialect the profile does
+   not know, a derivation step the chain lacks — the change is code, not
+   prompt: a new profile, a new connector adapter, a new obligation kind.
+   An agent can draft it; a human reviews it as any code. What we do not
+   attempt is learning inside the model's weights; the program stays
+   outside the model, where it can be read.
+
+What M2–M5 do for this: M2 records every run's `discovery` block and
+report so fixtures can be built from them; M5's surfaces capture
+dismissals and additions as structured signals (a reaction or a reply on
+the finding's comment); the `incidents` slot and the fixture-builder
+command come after M5, and loop 2 is run by hand on the five fixtures
+until there are enough production-derived ones to run it unattended.
+
+## 16. Decided
 
 1. Six dimensions: blast radius, correctness, scale, resilience,
    debuggability, test coverage.
@@ -869,7 +1029,7 @@ re-runs the fixtures and diffs the judge scores before it is merged.
 4. The six-dimension judgment is the lead's job in M2; the specialists
    discover and do not judge.
 
-## 16. Open for review
+## 17. Open for review
 
 1. **Bot commits.** Should the agent be allowed to push a commit onto a
    PR branch at all, or should it always use GitHub's suggested-change
@@ -879,6 +1039,10 @@ re-runs the fixtures and diffs the judge scores before it is merged.
    matters most to support next: a meshless fleet with OTel/gRPC metrics
    (same facts, different metric names), or Google Cloud Monitoring's
    native Kubernetes metrics (for fleets with no kube-state-metrics)?
+5. **The obligations catalogue** in §5.1 is an excerpt for one kind of
+   change. Before M2's prompts are written, the full catalogue — six kinds,
+   their obligations — is the thing to review most carefully; it is the
+   program.
 3. **Multiple proxies.** When prod is its own trust boundary, the
    controller fans one discovery out to several proxies and merges by
    cluster. Fine to leave this out of M2 and run one proxy over all
