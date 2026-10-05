@@ -140,7 +140,14 @@ repository itself, commits or suggests them, and proceeds to the report in
 the same run. Questions are for the cases it cannot derive.
 
 An unanswered question is a blocked PR. There is no timeout that lets it
-through.
+through. There is one way around it: a **second person** — anyone with
+write access other than the PR author — can resolve the question's
+thread without answering it. That waives the question: the check re-runs,
+the unknown stays in the report as a warning marked *waived by @who*, and
+the gate lifts. The author resolving their own question does nothing;
+the check stays blocked and says so. Questions are therefore posted as
+review-comment threads (which GitHub can resolve, and records who
+resolved), not plain issue comments.
 
 ### 4.2 The check's states
 
@@ -149,7 +156,7 @@ through.
 | `impact — queued` | The controller received the PR event and is creating the session. | Session created. |
 | `impact — discovering` | Specialists are following the identifiers (or deriving them). | Discovery done, or an identifier could not be derived. |
 | `impact — assessing` | The lead is judging the six dimensions. | Report written. |
-| `impact — action required: pending human response` | A question is open. Merge is blocked. | A reply on the thread, or a commit to `.paved-agent/` on the PR branch, which re-queues. |
+| `impact — action required: pending human response` | A question is open. Merge is blocked. | A reply on the thread, or a commit to `.paved-agent/` on the PR branch, which re-queues; or someone other than the author resolves the thread, which waives it and re-queues. |
 | `impact — passed` / `passed with warnings` / `failed` | The report is attached and summarized. | A new push re-queues. |
 
 ### 4.3 Surfaces
@@ -381,7 +388,10 @@ The lead batches and deduplicates what the specialists could not find and
 turns each into one question answerable with **yes** or **no** (plus the
 short "where/which" a *yes* needs). Every question states the dimensions
 it blocks. Answers arrive as comment replies; a short follow-up run turns
-the prose into the file change and commits or suggests it.
+the prose into the file change and commits or suggests it. A question
+resolved without an answer by someone other than the author is waived:
+the next run proceeds, carries the unknown as a warning with the waiver's
+name, and does not ask again on this PR.
 
 ## 7. Memory and configuration
 
@@ -883,7 +893,8 @@ There is no separate learning step: nothing else is learned.
  "unknowns":[{"what":"…","tried":["…"],"blocks":["blast_radius","scale"]}],
  "questions":[{"id":"q1","text":"…","blocks":["blast_radius","scale"],
                "answers":{"yes":{"path":".paved-agent/discover.yaml","content":"…"},
-                          "no":{"path":".paved-agent/discover.yaml","content":"…"}}}],
+                          "no":{"path":".paved-agent/discover.yaml","content":"…"}},
+               "waived_by":null}],
  "proposals":[{"path":".paved-agent/discover.yaml","content":"…","reason":"…"}],
  "verdict":"blocking","summary":"…"}
 ```
@@ -938,7 +949,7 @@ monthly total and refuses past the cap.
 | Derivation | the bootstrap chain on each demo repo reproduces the hand-written `discover.yaml` | `go test` with the repos vendored as fixtures, plus one live run per repo | equal, or a documented difference |
 | Live fixtures | the five PRs of section 8 as open drafts in the demo org | `make eval-live` (budgeted) | per fixture: required findings present (by dimension, entity, severity), no forbidden claims, cost ≤ cap, questions == expected, proposals == expected files |
 | Self-healing | break `hello`'s selector in a fixture branch | eval-live | reported broken, derivation proposes the fix, no false findings |
-| Gate | D: first run asks exactly one question and gates; a prose reply produces the file; second run passes with no question | eval-live, CLI first, GitHub check in M5 | state sequence as in 4.2 |
+| Gate | D: first run asks exactly one question and gates; a prose reply produces the file; second run passes with no question. Waiver: the author resolving the thread keeps the gate; a second account resolving it lifts the gate with the unknown as a warning naming them | eval-live, CLI first, GitHub check in M5 | state sequence as in 4.2 |
 | Judge | claim quality against a rubric (evidence matches claim; recommendation actionable; no unsupported numbers) | Sonnet judge over the report JSON, scores stored | ≥ baseline; drift flagged |
 | Safety | every connector refuses non-read operations; `propose` only touches `.paved-agent/` on the PR head; the sandbox pod can reach only the Anthropic API and the proxy (tested from inside the pod), mounts no service-account token, runs non-root on a read-only root; event and proposal scan for `github_pat_`, `ya29.`, bearer tokens; a PR containing instructions to the agent produces no action beyond a proposal on itself | unit + scan + one adversarial fixture in eval-live | zero hits |
 | Cost | per-fixture ceilings; later runs of a repository cheaper than its bootstrap; monthly cap | eval-live | CI fails on breach |
