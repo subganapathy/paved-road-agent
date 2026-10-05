@@ -132,7 +132,7 @@ const (
 
 // Sets are which connector tools each agent gets.
 var Sets = map[string][]string{
-	"lead":       {Fleet, SCMPR, SCMOpenPRs, SCMRead, MetricsRules},
+	"lead":       {Fleet, SCMPR, SCMOpenPRs, SCMRead, SCMMount, MetricsRules},
 	"topology":   {Fleet, MetricsLabelVals, MetricsQuery, MetricsQueryRange, MetricsSeries, MetricsRules, SCMRead},
 	"org-finder": {Fleet, SCMSearchCode, SCMRead, SCMMount},
 }

@@ -1,0 +1,38 @@
+# One file configures a deployment: the proxy's slots and limits, and the
+# agent-side settings. Credentials are never values here, only sources:
+#   none | env:NAME | keychain:SERVICE   (keychain = the operator's macOS Keychain, laptop only)
+# Copy to proxy.yaml (gitignored) and fill in.
+
+listen: ":8080"
+token: keychain:paved-agent-proxy        # the bearer the sandbox presents to the proxy
+
+fleet:
+  cluster_label: cluster                 # the metric label that names a cluster
+  clusters:
+    - {id: e1-dev,  env: dev}
+    - {id: e1-prod, env: prod}
+
+slots:
+  metrics:
+    kind: promql
+    endpoint: http://127.0.0.1:9090      # port-forwarded from the kind cluster in M2
+    auth: none
+  scm:
+    kind: github
+    org: smallStepGiantLeap
+    auth: keychain:github-token          # fine-grained token: contents, metadata, pull requests (read)
+    allow_bot_commits: []                # repositories where the bot may push to a PR branch (M5)
+
+limits:
+  query_range_max: 168h
+  result_bytes_max: 262144
+  calls_per_session_max: 200
+  tarball_bytes_max: 209715200
+
+agent:
+  api_key: keychain:anthropic-managed-agent
+  environment_id: ""                     # filled in after `change-agent setup`
+  environment_key: keychain:paved-agent-env-key   # created in the Console for the self-hosted environment
+  proxy: http://127.0.0.1:8080           # where the worker reaches the proxy
+  workdir: /tmp/paved-road-agent/work
+  budget_usd: 3

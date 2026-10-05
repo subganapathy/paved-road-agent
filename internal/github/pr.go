@@ -165,6 +165,11 @@ func semantic(p string) bool {
 	return false
 }
 
+// Contents returns one file at a ref, for callers outside the package.
+func (c *Client) Contents(ctx context.Context, owner, repo, p, ref string) (string, error) {
+	return c.contents(ctx, fmt.Sprintf("/repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo)), p, ref)
+}
+
 func (c *Client) contents(ctx context.Context, repo, p, ref string) (string, error) {
 	var body struct {
 		Content  string `json:"content"`
