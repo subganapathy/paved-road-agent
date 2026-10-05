@@ -256,7 +256,7 @@ In more detail, six steps; the first and last are deterministic code.
 ```
  PR ──▶ intake ──▶ bootstrap ──▶ discovery ──▶ analysis ──▶ report ──▶ propose
         (code)    (derive or    (specialists, (lead,       (code:      (code:
-                   ask)          determin-     seven        check,      commit or
+                   ask)          determin-     nine         check,      commit or
                                  istic)        dimensions)  comment)    suggestion)
 ```
 
