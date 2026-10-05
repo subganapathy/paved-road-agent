@@ -10,11 +10,11 @@ func TestProgramLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Version != 1 {
+	if p.Version != 2 {
 		t.Errorf("version = %d", p.Version)
 	}
 	for _, q := range p.Qualities {
-		if !strings.Contains(strings.Join(strings.Fields(q.Instantiate), " "), "that is the finding") && q.ID != "blast-radius" {
+		if !strings.Contains(strings.Join(strings.Fields(q.Instantiate), " "), "that is the finding") && q.ID != "progressively-delivered" {
 			t.Errorf("%s: instantiation guidance should say what the finding is when the quality is unaffected", q.ID)
 		}
 	}

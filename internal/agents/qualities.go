@@ -8,8 +8,9 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// qualitiesYAML is the program: seven qualities, instantiated per change
-// by the lead. It is embedded so the binary carries exactly the reviewed
+// qualitiesYAML is the program: the properties a good change shows, each
+// closing one way a change causes an incident, instantiated per change by
+// the lead. It is embedded so the binary carries exactly the reviewed
 // file, and tests check it names no product.
 //
 //go:embed qualities.yaml
@@ -22,19 +23,20 @@ type Program struct {
 	Qualities []Quality `yaml:"qualities"`
 }
 
-// Quality is one of the seven.
+// Quality is one property of a good change.
 type Quality struct {
-	ID          string            `yaml:"id"`
-	Name        string            `yaml:"name"`
-	Definition  string            `yaml:"definition"`
-	Instantiate string            `yaml:"instantiate"`
-	Evidence    map[string]string `yaml:"evidence"` // class → where it lives
-	Severity    string            `yaml:"severity"`
-	Weight      string            `yaml:"weight"`
+	ID              string            `yaml:"id"`
+	Name            string            `yaml:"name"`
+	Prevents        string            `yaml:"prevents"` // the incident it closes the path to
+	Definition      string            `yaml:"definition"`
+	Instantiate     string            `yaml:"instantiate"`
+	Evidence        map[string]string `yaml:"evidence"` // class → where it lives
+	Severity        string            `yaml:"severity"`
+	Proportionality string            `yaml:"proportionality"`
 }
 
 // QualityIDs is the order the report lists them.
-var QualityIDs = []string{"correctness", "compatibility", "blast-radius", "scalability", "resilience", "debuggability", "testability"}
+var QualityIDs = []string{"correct", "reversible", "within-budget", "stable-under-failure", "progressively-delivered", "available", "secure", "observable", "proven"}
 
 // LoadProgram parses the embedded file and checks its shape.
 func LoadProgram() (*Program, error) {
@@ -52,7 +54,7 @@ func LoadProgram() (*Program, error) {
 		if q.ID != QualityIDs[i] {
 			return nil, fmt.Errorf("qualities.yaml: quality %d is %q, want %q", i, q.ID, QualityIDs[i])
 		}
-		for field, v := range map[string]string{"definition": q.Definition, "instantiate": q.Instantiate, "severity": q.Severity, "weight": q.Weight} {
+		for field, v := range map[string]string{"prevents": q.Prevents, "definition": q.Definition, "instantiate": q.Instantiate, "severity": q.Severity, "proportionality": q.Proportionality} {
 			if strings.TrimSpace(v) == "" {
 				return nil, fmt.Errorf("qualities.yaml: %s has empty %s", q.ID, field)
 			}
@@ -68,9 +70,10 @@ func LoadProgram() (*Program, error) {
 func (p *Program) Render() string {
 	var sb strings.Builder
 	sb.WriteString(strings.TrimSpace(p.Preamble))
-	sb.WriteString("\n\n# The seven qualities\n")
+	sb.WriteString("\n\n# The properties of a good change\n")
 	for _, q := range p.Qualities {
 		fmt.Fprintf(&sb, "\n## %s (%s)\n\n", q.Name, q.ID)
+		fmt.Fprintf(&sb, "The incident it prevents: %s\n\n", strings.TrimSpace(q.Prevents))
 		fmt.Fprintf(&sb, "Definition: %s\n\n", strings.TrimSpace(q.Definition))
 		fmt.Fprintf(&sb, "How to instantiate it for a change:\n%s\n", strings.TrimSpace(q.Instantiate))
 		sb.WriteString("\nWhere the evidence lives:\n")
@@ -80,7 +83,7 @@ func (p *Program) Render() string {
 			}
 		}
 		fmt.Fprintf(&sb, "\nSeverity:\n%s\n", strings.TrimSpace(q.Severity))
-		fmt.Fprintf(&sb, "\nWeight: %s\n", strings.TrimSpace(q.Weight))
+		fmt.Fprintf(&sb, "\nProportionality: %s\n", strings.TrimSpace(q.Proportionality))
 	}
 	return sb.String()
 }
