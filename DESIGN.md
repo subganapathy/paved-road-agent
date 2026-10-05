@@ -1,10 +1,16 @@
 # paved-road-agent: design
 
-Status: revision 5, 2026-10-05. [VISION.md](VISION.md) holds the why;
+Status: revision 6, 2026-10-05. [VISION.md](VISION.md) holds the why;
 [subbu-thoughts.md](subbu-thoughts.md) holds the thesis this revision
 adopts.
 
-Changes in this revision: the agent's program is stated as **obligations**
+Changes in revision 6: **no profiles and no capability probe in code**
+— the model discovers the stack (mesh, deployment tool, policy enforcer,
+admission engine, autoscaler, workload kinds, which metrics exist) with
+generic connectors and its own knowledge, every run; the evaluation
+hardcodes each environment's architecture only as the expected answer;
+a per-tenant cache of what was discovered is a later optimization, not
+this version. Changes in revision 5: the agent's program is stated as **obligations**
 — what must be established for each kind of change, what evidence
 establishes it, and what it costs when it cannot be — rather than as
 prose instructions (§5.1); the minimal library is three connectors
@@ -24,10 +30,13 @@ touches. The only assumption about the environment is Kubernetes. It
 reviews; it never executes. It reaches the environment only through a
 **proxy** that exposes a closed set of read-only **connectors** (metrics,
 logs, alerts, source control, cloud) and holds every credential; the
-agent holds none and has no network. The only thing it remembers is a
-small set of **identifiers** in the repository's `.paved-agent/`
-directory: the join keys between the code and the environment, which it
-derives, proposes, and follows. When it cannot derive them, it asks a
+agent holds none and has no network. It discovers the stack it is
+looking at — which mesh, which deployment tool, which policy enforcer,
+which metrics exist — on every run, from what the connectors return and
+what it already knows; no code in this system names a product. The only
+thing it remembers is a small set of **identifiers** in the repository's
+`.paved-agent/` directory: the join keys between the code and the
+environment, which it derives, proposes, and follows. When it cannot derive them, it asks a
 yes/no **question** on the PR, says what it cannot verify without the
 answer, and blocks the check until the answer lands.
 
@@ -47,9 +56,9 @@ Terms as they are used in the rest of this document.
 | **Worker** | The process in the sandbox that watches the session's event stream, executes each tool call, and posts the result. |
 | **Proxy** | The service that holds every credential and talks to the real systems. Every connector call from the sandbox goes through it. |
 | **Connector (slot)** | One of five typed, read-only interfaces the proxy exposes: `metrics`, `logs`, `alerts`, `scm` (source control), `cloud`. Each slot is *bound* at install time to a concrete backend. |
-| **Profile** | Code in the proxy that knows how to turn identifiers into queries for a particular metrics stack (e.g. kube-state-metrics + Istio). |
+| **Stack discovery** | The topology specialist's first job in every run: working out from metric names, manifests and its own knowledge which mesh, deployment tool, policy enforcer, admission engine and autoscaler the fleet uses, and therefore which queries answer the qualities' questions. There is no table of stacks in the code. |
 | **Identifiers** | The small file `.paved-agent/discover.yaml` in the repository: namespace, labels and container name that identify this service's pods anywhere, plus answers to past questions. |
-| **Discovery** | Following the identifiers through the connectors to learn what runs where, how much traffic it carries, who calls it, and what it depends on. Deterministic. |
+| **Discovery** | Following the identifiers through the connectors to learn what runs where, how much traffic it carries, who calls it, and what it depends on — with queries the specialist forms from the stack it discovered. |
 | **Run memory** | What discovery produced in this session. Kept for the run, summarized in the report, then gone. |
 | **Quality / dimension** | One of the seven properties every safe change has. The program defines them; the report gives each a verdict. |
 | **Finding** | One claim with evidence, under one dimension, with a severity: `info`, `warning`, `blocking`. |
@@ -93,10 +102,10 @@ Non-goals (for now)
 
 Assumptions
 
-- Workloads run on Kubernetes. Which metrics stack describes them is
-  **detected, not assumed**: at start the proxy probes the metrics
-  backend for the metric families it knows (section 7.4) and selects or
-  rejects a profile accordingly.
+- Workloads run on Kubernetes. Everything else about the stack — mesh,
+  deployment tool, policy enforcer, admission engine, autoscaler,
+  metrics families — is **discovered by the model each run** (§7.4), not
+  configured and not encoded. The code contains no table of products.
 - Source control is the unit of knowledge: the repository under review,
   and other repositories in the org read through the `scm` connector.
 - Cloud providers are parameters, not assumptions: `cloud_get("gcp", …)`.
@@ -188,9 +197,9 @@ middle four involve the agents.
    the repository (section 6.2). Derived with confidence → proposed, and
    the run continues with the derived values. Not derivable → a question,
    and the check gates.
-3. **Discovery.** The specialists follow the identifiers through the
-   proxy using the profile's standard queries. This is deterministic and
-   cheap: a handful of calls. The results — ready instances per cluster,
+3. **Discovery.** The topology specialist first discovers the stack
+   (§7.4), then follows the identifiers through the proxy with queries it
+   forms for that stack. A handful of calls. The results — ready instances per cluster,
    the workload kind, desired replicas and the autoscaler ceiling, rps,
    callers, in-flight work, p99, CPU and memory against limits, exposure
    outside the cluster, identities, mounted configuration, cloud resource
@@ -318,8 +327,9 @@ instantiate to:
 Two rules the file enforces on itself. **No product names**: the program
 says "staged rollout with automatic analysis", "service-to-service
 authorization", "cluster state metrics", never the name of a tool; names
-belong to profiles and connector adapters, and a test fails the build if
-one appears in a rendered prompt. **Kinds of change are examples, not
+belong in the report, where the model writes what it discovered, and a
+test fails the build if one appears in a rendered prompt or in Go source
+outside `evals/`. **Kinds of change are examples, not
 structure**: the worked instantiations for a new call, a handler change,
 a manifest change, an infrastructure change live in the evals as fixtures
 and in the prompt as at most two short examples, to calibrate.
@@ -350,9 +360,10 @@ nothing is an unknown and becomes a question.
 
 Two modes.
 
-**Following** (every run). Given the identifiers — namespace, label
-selector, container name, clusters — it runs the profile's standard
-queries and returns a placement record per cluster and environment: ready
+**Following** (every run). It begins with stack discovery (§7.4). Then,
+given the identifiers — namespace, label selector, container name,
+clusters — it forms the queries that the discovered stack answers with
+and returns a placement record per cluster and environment: ready
 instances, workload kind (Rollout, Deployment, StatefulSet, DaemonSet),
 desired replicas, autoscaler ceiling, image, rps, callers, p99, CPU and
 memory against limits, whether the service is exposed outside the
@@ -380,17 +391,18 @@ agree. With `hello` as the example:
    container `hello`, a Rollout.
 5. *In which clusters?* Overlays, Helm values per cluster, ApplicationSet
    selectors, fleet files. → all three.
-6. *Confirm.* Run the profile's instance query with the derived labels per
-   cluster. → ready pods in dev, staging, prod. Confident.
+6. *Confirm.* Count ready pods with the derived labels per cluster, using
+   the cluster-state metrics discovered in §7.4. → ready pods in dev,
+   staging, prod. Confident.
 7. *Else ask.* If step 4 finds no pod template, or step 6 finds no pods,
    the question names exactly which step came up empty and what it blocks.
 
 Steps 1–4 are deterministic reads. Step 5 is where companies diverge and
 where a human is most likely needed, once.
 
-A cluster without kube-state-metrics leaves actual state unknown for that
-cluster; the discoverer reasons from intent only, says so, and the
-affected findings carry lower confidence.
+A cluster whose metrics carry no cluster-state families leaves actual
+state unknown for that cluster; the discoverer reasons from intent only,
+says so, and the affected findings carry lower confidence.
 
 ### 6.3 Cloud discoverer
 
@@ -430,7 +442,7 @@ Three layers. The agent owns none of them durably.
 |---|---|---|---|
 | Identifiers | `.paved-agent/discover.yaml` in the repository | the team (proposed by the bot) | join keys and answers |
 | Run memory | the session | nobody | what discovery found this run |
-| Proxy configuration | `proxy.yaml` in the deployment | the platform team | backends, fleet, environments, credentials' sources, profile, limits |
+| Proxy configuration | `proxy.yaml` in the deployment | the platform team | backends, fleet, environments, credentials' sources, limits |
 
 ### 7.1 Identifiers
 
@@ -500,7 +512,6 @@ once. Repositories never see any of it.
 
 ```yaml
 # proxy.yaml — one per deployment of the proxy
-profile: auto                               # or a name; auto = pick from the capability probe
 fleet:
   cluster_label: cluster                    # the metric label that names a cluster
   clusters:
@@ -528,8 +539,7 @@ same as one prod cluster. A service's `clusters:` may name an environment
 backend and a network, one proxy sees them all. If prod is a separate
 boundary with its own backends and credentials, it gets its own proxy
 with its own `proxy.yaml`; the controller sends the same discovery to each
-and merges the results by cluster. Same profile code, different
-configuration. M2 runs one proxy.
+and merges the results by cluster. Same code, different configuration. M2 runs one proxy.
 
 **`auth` names a source, never a value**: an OIDC client, a workload
 identity federation binding, a mounted secret. On the laptop in M2 this is
@@ -542,67 +552,58 @@ a PR branch in this repository? Repositories listed here get commits;
 all others get a GitHub suggested change that the author applies with one
 click. Either way a human merges.
 
-### 7.4 Profiles and the capability probe
+### 7.4 Stack discovery: the model as programmer
 
-A profile is the code that knows, for one metrics stack, how to turn
-identifiers into queries. The questions a profile answers are fixed; the
-queries differ by stack.
+There is no profile. Nothing in the code knows what Istio, Linkerd, Argo,
+Flux, Calico, Cilium, Gatekeeper or Kyverno look like. The model does,
+and the connectors let it look. Stack discovery is the topology
+specialist's first job in every run, and it is written in its prompt as a
+procedure of generic steps, not as a table:
 
-kube-state-metrics is not universal. It ships with the common Prometheus
-distributions (kube-prometheus-stack, GKE's and EKS's managed
-collectors offer it as a package), but Datadog exposes the same facts as
-`kubernetes_state.*`, Google Cloud Monitoring as `kubernetes.io/…`
-resources, and some fleets have none of these. So the proxy **probes** at
-start: it asks the metrics backend which metric families exist
-(`kube_pod_info`, `istio_requests_total`, `rollout_info_replicas_desired`,
-`argocd_app_info`, `keda_scaler_active`, …) and records a capability map.
-`profile: auto` picks the profile whose required families are present;
-missing optional families are reported (`proxy status`) and the
-corresponding questions degrade to "intent only, lower confidence" rather
-than failing.
+1. **List what the metrics backend has.** `metrics.label_values("__name__")`
+   returns every metric family. From the names the model recognises the
+   cluster-state exporter (or its absence), the mesh and whether it is
+   sidecar or ambient, the deployment tool and whether it reports drift,
+   the progressive-delivery controller, the autoscaler, the network
+   policy enforcer's flow metrics, the admission engine's audit metrics.
+   One call; the model's training does the identification.
+2. **Read the intent for what metrics cannot show.** Through `scm`: the
+   platform's own manifests (control planes, CRD kinds, admission
+   policies, mesh modes such as strict mTLS), the GitOps configuration
+   that says which directory each cluster runs, the workload kinds. The
+   org finder locates these repositories when they are not the one under
+   review.
+3. **When the expected metrics are absent, do not conclude absence.** A
+   company that mirrors images into a private registry will not have a
+   public image reference anywhere; a mesh may be installed under a
+   different release name; metrics may be relabelled. The model then
+   identifies components by what cannot be renamed: CRD kinds in the
+   intent, container names, chart structure, the control plane's own
+   Deployments, and the shape of the metric labels that do exist. Only
+   after that does it report "no mesh" — with the evidence that it looked.
+4. **Decide what each quality's question maps to here.** "Who calls this
+   service" is a mesh request metric by destination in one fleet, a
+   network-flow metric in another, and intent-only in a third. The
+   specialist writes that mapping down as part of the run memory, with
+   the queries it chose, so the report can show its work and the evals
+   can check it against the environment's known architecture.
+5. **Form the queries and follow the identifiers.** Pods are the unit for
+   counting instances regardless of workload kind; the owner chain
+   (pod → ReplicaSet → Deployment or Rollout; pod → StatefulSet;
+   pod → DaemonSet) tells it which object holds the desired count and
+   which autoscaler sets the ceiling. All of this is the model's
+   knowledge applied to what step 1 returned.
 
-The first profile is **kube-state-metrics + Istio**. What it answers, and
-how, in words:
+What this costs: a few extra connector calls per run on the smaller
+model. What it buys: a fleet with a stack we never anticipated gets the
+same review as one we did, and a wrong guess shows up in the run memory
+where a human can see it.
 
-- *How many instances are ready, per cluster?* Count pods in the namespace
-  whose labels match the selector and whose Ready condition is true. Pods
-  are the unit because they exist regardless of workload kind.
-  ```
-  count by (cluster) (
-    kube_pod_info{namespace="hello"}
-    * on (pod) group_left kube_pod_status_ready{condition="true"}
-    * on (pod) group_left kube_pod_labels{label_app_kubernetes_io_name="hello"})
-  ```
-- *What kind of workload owns them, and how many are desired?* Follow the
-  owner chain: `kube_pod_owner` says a pod belongs to a ReplicaSet or a
-  StatefulSet or a DaemonSet; `kube_replicaset_owner` says whether that
-  ReplicaSet belongs to a Deployment or an Argo Rollout. Then ask the
-  right object for its desired count — `rollout_info_replicas_desired`
-  for Rollouts (from the Argo Rollouts controller), `kube_deployment_spec_replicas`,
-  `kube_statefulset_replicas`, `kube_daemonset_status_desired_number_scheduled`.
-  Unknown kind → read the intent, lower confidence.
-- *What is the ceiling?* `kube_horizontalpodautoscaler_spec_max_replicas`
-  for the HPA that targets the workload (KEDA creates one); if none, the
-  desired count is the ceiling.
-- *How much traffic, from whom, how fast?* The mesh's request metrics by
-  destination workload: `istio_requests_total` rated over 5 minutes for
-  rps, summed by `source_workload` over an hour for callers,
-  `istio_request_duration_milliseconds_bucket` for p99.
-- *Is it reachable from outside the cluster?* Callers whose
-  `source_workload` is an ingress gateway, plus `kube_service_spec_type`
-  = LoadBalancer or an Ingress/Gateway object in the intent.
-- *How hot is it?* `container_cpu_usage_seconds_total` and
-  `container_memory_working_set_bytes` against
-  `kube_pod_container_resource_limits`.
-- *Does what runs match what git says?* `argocd_app_info{sync_status,
-  health_status}` for the application.
-- *Is anything already on fire?* `ALERTS{alertstate="firing"}` in the
-  namespace, and alert rules that mention the workload (the rules API).
-
-A second profile covers the same questions for a meshless fleet with
-OTel/gRPC metrics; a third could cover Google Cloud Monitoring's native
-Kubernetes metrics for fleets without kube-state-metrics. Adding a stack
-is adding a profile, reviewed as code.
+**Later optimization, not this version.** What a run discovered about a
+fleet could be saved against a tenant id and offered to the next run as a
+starting hypothesis to verify, cutting the discovery calls. This version
+deliberately rediscovers every run: it is the honest test of whether the
+model can be the programmer.
 
 ## 8. Sample PRs, end to end (code only)
 
@@ -739,7 +740,7 @@ needs. Given Kubernetes and source control, the answer is three:
 
 | Slot | Operations | Bound to (examples) | Read / write |
 |---|---|---|---|
-| `metrics` | `query`, `query_range`, `series`, `label_values`, `rules` — firing alerts come from `ALERTS` and alert rules from the rules API, so there is no separate alerts slot | Prometheus, Thanos, Mimir, AMP, GMP, Victoria; (later) Datadog, Cloud Monitoring via adapters | read |
+| `metrics` | `query`, `query_range`, `series`, `label_values` (including `__name__`, which is how the model learns what the fleet exports), `rules` — firing alerts come from `ALERTS` and alert rules from the rules API, so there is no separate alerts slot | Prometheus, Thanos, Mimir, AMP, GMP, Victoria; (later) Datadog, Cloud Monitoring via adapters | read |
 | `scm` | `search_code`, `read(repo, ref, path)`, `mount(repo, ref)`, `pr(…)`, `open_prs`, `comment_replies` | GitHub, GitLab | read; writes: `comment`, `check`, `propose` (`.paved-agent/` on the PR branch only) |
 | `logs` | `search(selector, query, range)` → bounded lines | Loki, Cloud Logging, CloudWatch Insights, OpenSearch | read |
 
@@ -749,7 +750,9 @@ in Terraform or Crossplane, dynamic configuration — is readable through
 `scm`; *actual* state of the fleet is readable through `metrics`; and
 *behaviour* is readable through `logs`. The model already knows how
 clouds are reached from Kubernetes, how meshes expose traffic, how
-policy engines express rules; it needs the facts, not the lessons.
+policy engines express rules, what each product's metrics are called; it
+needs the facts, not the lessons — and no code in this system carries
+those lessons for it.
 
 Two more slots come later, when an obligation needs actual-versus-intent
 outside the cluster:
@@ -908,14 +911,12 @@ deploy/               kind manifests: sandbox and proxy Deployments, NetworkPoli
 internal/change       the change (exists)
 internal/findings     report contract: seven qualities, findings, unknowns, questions, proposals
 internal/identifiers  .paved-agent/discover.yaml: schema, load, lint (identifiers only)
-internal/profile      capability probe; profiles: kube-state-metrics+istio first
 internal/proxy        the HTTP service: slots, adapters, policy, audit, config, repo tarballs;
                       and the controller (PR events, sessions, check states, collect)
 internal/connectors   the tools' side: typed schemas registered on the agents, HTTP clients of the proxy
-internal/discover     follow identifiers through the proxy with a profile; derive at bootstrap
 internal/sandbox      the worker: workdir, unpack tarballs, agenttoolset + connector tools
-internal/agents       lead, org-finder, topology, cloud (definitions as code; the change-kind
-                      catalogue lives in the lead's system prompt)
+internal/agents       lead, org-finder, topology, cloud: definitions as code; qualities.yaml for
+                      the lead, the stack-discovery procedure for the topology specialist
 internal/session      create, watch, collect the report
 internal/github       PRs → changes (exists); checks, comment threads, suggestions, branch commits
 internal/classify     milestone-1 rules; kept only until M2 measures a pre-pass
@@ -991,7 +992,7 @@ writes to git directly.
 |---|---|---|---|
 | lead | claude-opus-5, effort high | sandbox tools, `change_diff`, `scm.open_prs`, `metrics.rules`, `alerts`, `ask`, `propose`; may delegate to the three below | reading the code, deciding what to discover, judging the seven qualities, questions, proposals, the report |
 | org finder | claude-sonnet-5 | `scm.search_code`, `scm.mount`, sandbox tools | finding and mounting the defining repository |
-| topology discoverer | claude-sonnet-5 | sandbox tools, `metrics`, `logs` | following and deriving workload identifiers; placement, scale inputs, exposure, identity, configuration presence |
+| topology discoverer | claude-sonnet-5 | sandbox tools, `metrics`, `logs` | stack discovery; following and deriving workload identifiers; placement, scale inputs, exposure, identity, configuration presence |
 | cloud discoverer | claude-sonnet-5 | `cloud_get` | following cloud references; identity and IAM |
 
 The seven-quality judgment is done by the lead itself in M2, in one
@@ -1014,8 +1015,9 @@ is cents outside the Autopilot hours.
 | Fixture eval run (5 PRs, 7 runs) | | $6–12 | $15 |
 | GKE Autopilot for fixture C | ~2 pods for 2 h | < $1 | delete after |
 
-Levers, in order: identifiers plus a profile make discovery a handful of
-deterministic queries (derivation runs once per repository, not per PR);
+Levers, in order: identifiers make following cheap (derivation runs once
+per repository, not per PR) and stack discovery is a few calls on the
+smaller model;
 Sonnet for everything that reads, Opus only where it judges; prompt
 caching of the identifiers and referenced docs; at most 4 specialists per
 review; a question ends the session, so waiting costs nothing; the
@@ -1033,9 +1035,10 @@ that matrix and the deterministic parts are exercised.
 
 | Layer | What | How | Pass |
 |---|---|---|---|
-| Unit | no product names in any rendered prompt (denylist test); identifier schema and lint; capability probe → profile selection; profile query rendering; owner-kind resolution (Rollout, Deployment, StatefulSet, DaemonSet, unknown); external-exposure detection; report validation; check-state transitions; proxy policy (read-only methods, path restriction on `propose`, limits) | `go test` | green |
-| Recorded | `discover` against recorded kube-state-metrics/Istio/Argo responses from the sgrpc fleet, grouped by env; `cloud_get` against recorded GCP responses | fixtures under `evals/recorded`, no model | deterministic |
-| Derivation | the bootstrap chain on each demo repo reproduces the hand-written `discover.yaml` | `go test` with the repos vendored as fixtures, plus one live run per repo | equal, or a documented difference |
+| Unit | no product names in any rendered prompt or in any Go source outside `evals/` (denylist test); identifier schema and lint; report validation; check-state transitions; proxy policy (read-only methods, path restriction on `propose`, limits) | `go test` | green |
+| Replay | worker, controller and proxy driven end-to-end by a recorded session (a past run's tool calls and results); `cloud_get` against recorded responses | fixtures under `evals/recorded`, no model | deterministic |
+| Stack discovery | on each environment of the matrix, the topology specialist's discovered stack matches the environment's known architecture (mesh, enforcer and whether enforcing, admission, deployment tool, workload kinds, metrics families) | live, smaller model | match on every field, with evidence |
+| Derivation | bootstrap on each fixture repo reproduces the hand-written `discover.yaml` | live, smaller model | equal, or a documented difference |
 | Live fixtures | the five PRs of section 8 as open drafts in the demo org | `make eval-live` (budgeted) | per fixture: required findings present (by dimension, entity, severity), no forbidden claims, cost ≤ cap, questions == expected, proposals == expected files |
 | Self-healing | break `hello`'s selector in a fixture branch | eval-live | reported broken, derivation proposes the fix, no false findings |
 | Gate | D: first run asks exactly one question and gates; a prose reply produces the file; second run passes with no question. Waiver: the author resolving the thread keeps the gate; a second account resolving it lifts the gate with the unknown as a warning naming them | eval-live, CLI first, GitHub check in M5 | state sequence as in 4.2 |
@@ -1043,8 +1046,8 @@ that matrix and the deterministic parts are exercised.
 | Safety | every connector refuses non-read operations; `propose` only touches `.paved-agent/` on the PR head; the sandbox pod can reach only the Anthropic API and the proxy (tested from inside the pod), mounts no service-account token, runs non-root on a read-only root; event and proposal scan for `github_pat_`, `ya29.`, bearer tokens; a PR containing instructions to the agent produces no action beyond a proposal on itself | unit + scan + one adversarial fixture in eval-live | zero hits |
 | Cost | per-fixture ceilings; later runs of a repository cheaper than its bootstrap; monthly cap | eval-live | CI fails on breach |
 
-Golden reports are kept per fixture; a change to a prompt or a profile
-re-runs the fixtures and diffs the judge scores before it is merged.
+Golden reports are kept per fixture; a change to a prompt re-runs the
+fixtures and diffs the judge scores before it is merged.
 
 ### 13.1 What testing costs
 
@@ -1054,14 +1057,15 @@ cents; only the release gate costs dollars.
 
 | Tier | What runs | Model | Cost per run | When |
 |---|---|---|---|---|
-| Unit + recorded | proxy policy, profiles, discovery, identifiers, controller, check states, the no-product-names test — everything deterministic | none | $0 | every commit |
+| Unit + recorded | proxy policy, connectors, identifiers, controller, check states, the no-product-names test — everything deterministic | none | $0 | every commit |
 | Replay | worker, controller and proxy driven end-to-end by a recorded session: a fake event stream replays a past run's `tool_use` events and expects the same results | none | $0 | every commit |
 | Smoke | 2 fixtures, lead on the smallest model at low effort; checks the instantiation (right obligations?) and the report's shape, not verdict quality | Haiku | ~$0.05 | every prompt change |
-| Dev | 5 fixtures, Sonnet lead and specialists; verdicts and required findings | Sonnet | ~$1–2 | before pushing a prompt or profile change |
+| Dev | 5 fixtures, Sonnet lead and specialists; verdicts and required findings | Sonnet | ~$1–2 | before pushing a prompt change |
 | Release | all fixtures, Opus lead; judge scores against golden reports | Opus | ~$6–12 | merge to main; nightly at most |
 
-Why this holds: most iteration is on deterministic code (profiles,
-discovery, proxy, controller) and costs nothing; the program is
+Why this holds: much iteration is on deterministic code (proxy,
+connectors, controller, identifiers) and costs nothing; discovery itself
+is now a model task and is evaluated on the smaller model; the program is
 model-agnostic, so a cheaper model running the same `qualities.yaml` is a
 valid lower bound — if it instantiates the right obligations the stronger
 model will too, and if it cannot produce a well-formed report the prompt
@@ -1073,23 +1077,25 @@ damage of a runaway loop — per run, per CI run, per month.
 
 ## 14. Milestones
 
-- **M2 — identifiers, profile, proxy.** `discover.yaml` schema and lint;
-  the capability probe and the `kube-state-metrics+istio` profile; the
-  proxy service with `metrics` and `scm` slots, policy and tarballs;
-  connector tools as HTTP clients; `discover` with owner kinds, env
-  grouping and exposure; derivation; the questioner on the CLI; the
-  sandbox and proxy deployed on kind with the NetworkPolicy;
-  kube-state-metrics and Istio metrics on the sgrpc fleet; hand-written
-  identifiers for the demo repos; fixtures A, D, E. Exit: A reviewed with
-  seven qualities; D asks exactly one question and passes after the file
-  lands; E under $0.3; the derivation test matches the hand-written files.
-- **M3 — cross-repo and signals.** Org finder, `scm.open_prs`, `logs` and
-  `alerts` slots, fixture B. Exit: B blocks for correctness, scale and
-  resilience with metric and policy evidence, including retry
-  amplification and external exposure.
-- **M4 — cloud.** `cloud_get` with the GCP adapter and WIF, fixture C with
-  a short-lived Autopilot cluster. Exit: C asks for the bucket once, then
-  finds the missing config, identity and IAM grant.
+- **M2 — identifiers, proxy, discovery by the model.** `discover.yaml`
+  schema and lint; the proxy service with `metrics` and `scm` slots,
+  policy and tarballs; connector tools as HTTP clients; the topology
+  specialist with the stack-discovery procedure; derivation; the
+  questioner on the CLI; the sandbox and proxy deployed on kind with the
+  NetworkPolicy; environment E1 of the evaluation plan; hand-written
+  identifiers for the fixture repos; fixtures P2, P4, P7, P8. Exit: the
+  discovered stack for E1 matches its known architecture with evidence;
+  P4 reviewed with seven qualities; P7 asks exactly one question and
+  passes after the file lands; P8 under $0.3; derivation matches the
+  hand-written files.
+- **M3 — cross-stack.** Environments E4, E2, E3 of the evaluation plan;
+  org finder; `scm.open_prs`; the `logs` slot; fixtures P1, P5, P6, P9,
+  P10. Exit: the discovered stack matches on all four environments; P2
+  gets a different, correct answer in each.
+- **M4 — infrastructure and cloud.** `pra-infra` and fixture P3 on the
+  Kubernetes provider; `cloud_get` with the GCP adapter and WIF against a
+  recorded plan. Exit: P3 blocks on replacement and quota with the plan
+  as evidence.
 - **M5 — surfaces.** GitHub check with the states of 4.2, question threads
   with prose answers turned into commits, opt-in bot commits. Then Slack
   notifications linking back to the PR.
@@ -1153,6 +1159,11 @@ until there are enough production-derived ones to run it unattended.
    the absence of credentials and the pod's hardening are the boundary.
 4. The seven-quality judgment is the lead's job in M2; the specialists
    discover and do not judge.
+5. No profiles, no capability probe, no table of products anywhere in the
+   code. The model discovers the stack every run from generic connectors
+   and its own knowledge; a per-tenant cache of what it found is a later
+   optimization. The evaluation hardcodes each environment's architecture
+   only as the expected answer.
 
 ## 17. Open for review
 
@@ -1160,10 +1171,9 @@ until there are enough production-derived ones to run it unattended.
    PR branch at all, or should it always use GitHub's suggested-change
    feature (one click for the author to apply)? Proposed: allowed per
    repository, listed in `proxy.yaml`; suggested changes everywhere else.
-2. **Second profile.** After kube-state-metrics + Istio, which stack
-   matters most to support next: a meshless fleet with OTel/gRPC metrics
-   (same facts, different metric names), or Google Cloud Monitoring's
-   native Kubernetes metrics (for fleets with no kube-state-metrics)?
+2. **Discovery cost ceiling.** How many connector calls and how much of
+   the budget may stack discovery spend per run before the specialist
+   must stop and report what it has? Proposed: 25 calls and $0.25.
 5. **The qualities file** (§5.1) shows two of seven entries. Before M2's
    prompts are written, all seven — definitions, instantiation guidance,
    evidence classes, severity and weight — are the thing to review most

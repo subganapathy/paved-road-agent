@@ -5,11 +5,14 @@ Status: for review, 2026-10-05. Locks the test matrix before code.
 The test is: the same program (`qualities.yaml`, no product names) run
 against **four environments** built on kind, each a coherent, realistic
 stack, with **ten pull requests** whose expected outcome is known per
-environment. The lead must *discover* the stack — which mesh, which
+environment. The agent must *discover* the stack — which mesh, which
 policy enforcer and whether it enforces, which admission engine, which
-deployment tool, which workload kinds, which metrics exist — and then
-judge the PR against it. A finding that names the right product in the
-*report* is fine; a prompt that names one fails the build.
+deployment tool, which workload kinds, which metrics exist — from generic
+connectors and its own knowledge, and then judge the PR against it.
+Nothing in the code or the prompts names a product; the tables below are
+the *expected answers*. A finding that names the right product in the
+report is fine; a prompt or a Go source file outside `evals/` that names
+one fails the build.
 
 ## 1. Environments
 
@@ -102,22 +105,23 @@ release run — a weekly event, not a per-commit one.
 
 | Tier | Runs | Model | Cost | When |
 |---|---|---|---|---|
-| Unit + recorded | discovery against recorded metrics from each environment; derivation against the fixture repos; no model | none | $0 | every commit |
+| Unit + replay | proxy, connectors, controller, identifiers, and replay of recorded sessions per environment; no model | none | $0 | every commit |
 | Smoke | E1 × {P2, P8} | Haiku | ~$0.05 | every prompt change |
 | Dev | E1 × all ten | Sonnet | ~$3 | before pushing a prompt or profile change |
-| Cross-stack | {E2, E3, E4} × {P2, P4, P5, P6} | Sonnet | ~$6 | when discovery, profiles or the derivation chain change |
+| Cross-stack | {E2, E3, E4} × {P2, P4, P5, P6}, plus the stack-discovery check on each | Sonnet | ~$6 | when the specialists' prompts or the derivation guidance change |
 | Release | the full matrix | Opus | ~$45 | merge to main, weekly |
 
-Recorded metrics are captured once per environment with
-`hack/record.sh <id>` (every profile query against the live cluster,
-saved under `evals/recorded/<id>/`), so the $0 tier covers discovery for
-all four stacks without any cluster running.
+Recorded sessions (a past run's tool calls and results) are kept per
+environment under `evals/recorded/<id>/`, so the $0 tier can replay the
+worker, controller and proxy without any cluster running. Stack discovery
+itself is a model task and is only exercised in the paid tiers; the
+tables in §1 and §3 are its expected answers, never its inputs.
 
 ## 5. Build order
 
 1. **E1** first (closest to what exists), the three fixture repos with
-   `deploy/istio-argo/`, `hack/env-up.sh e1`, traffic generator,
-   `hack/record.sh`. P2, P4, P7, P8 as the first four PRs.
+   `deploy/istio-argo/`, `hack/env-up.sh e1`, traffic generator, session
+   recording. P2, P4, P7, P8 as the first four PRs.
 2. **E4** second — it is the cheapest to build and the most instructive
    (unenforced policy, no mesh, no KSM).
 3. **E2**, then **E3**.
