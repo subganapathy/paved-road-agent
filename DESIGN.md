@@ -77,7 +77,13 @@ Goals
   federation, one write path (the PR under review).
 - Bounded cost per review, enforced by the platform.
 - A design that becomes a hosted, multi-tenant service without rework
-  (section 10.3), even though M2 runs on one laptop for one org.
+  (§10.3–10.4), even though this project runs on one laptop for one org.
+
+Scope of this project: single tenant, self-hosted on kind, deployed and
+reviewing the fixtures end to end, with the Managed Agents / SDK split
+understood well enough to write it up publicly. The multi-tenant sandbox
+orchestration in §10.3–10.4 is recorded here as the design for the next
+project, not built in this one.
 
 Non-goals (for now)
 
@@ -831,7 +837,7 @@ our environment at all — and there is one worker per session, not two.
   a NetworkPolicy, a Service) are the production deployment on a
   customer's cluster; kind is that deployment on the laptop.
 
-### 10.3 Path to a hosted service
+### 10.3 Path to a hosted service (future project)
 
 Nothing in M2 is built in a way that blocks this; two things move:
 
@@ -850,7 +856,7 @@ Nothing in M2 is built in a way that blocks this; two things move:
 Tenant isolation is one proxy, one environment, one budget per tenant.
 The report contract, the connectors and the profiles do not change.
 
-### 10.4 Sandboxes per tenant
+### 10.4 Sandboxes per tenant (future project)
 
 A session is a *work item* on the tenant's self-hosted environment, and a
 sandbox claims exactly one. The SDK splits the two halves — a poller that
