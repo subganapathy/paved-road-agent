@@ -17,7 +17,7 @@ the hosted path.
 
 ## 1. The model in one paragraph
 
-An agent that assesses every pull request on six dimensions — **blast
+An agent that assesses every pull request on seven qualities — **blast
 radius, correctness, scale, resilience, debuggability, test coverage** —
 by discovering, on every run, where the changed code runs and what it
 touches. The only assumption about the environment is Kubernetes. It
@@ -39,7 +39,7 @@ Terms as they are used in the rest of this document.
 |---|---|
 | **Managed Agents** | Anthropic's hosted agent runtime. It runs the models, their turns, delegation between agents, budgets, and keeps the trace. It does not run our tools; it asks us to. |
 | **Agent** | A versioned configuration on Managed Agents: a model, a system prompt, a list of tools. We define five. |
-| **Lead** | The agent that owns a review: reads the diff, decides what must be discovered, delegates to specialists, judges the six dimensions, writes the report. Runs on the strongest model. |
+| **Lead** | The agent that owns a review: reads the diff, decides what must be discovered, delegates to specialists, judges the seven qualities, writes the report. Runs on the strongest model. |
 | **Specialist** | An agent the lead delegates one task to and that returns facts: the *org finder*, the *topology discoverer*, the *cloud discoverer*. Run on a smaller model. |
 | **Session** | One review: the lead's conversation plus its specialists' sub-conversations, with a dollar budget. |
 | **Tool call** | An agent asking for something to be done outside the model: read a file, run a query. Managed Agents emits it as an event on the session's stream and waits for a result. |
@@ -51,13 +51,13 @@ Terms as they are used in the rest of this document.
 | **Identifiers** | The small file `.paved-agent/discover.yaml` in the repository: namespace, labels and container name that identify this service's pods anywhere, plus answers to past questions. |
 | **Discovery** | Following the identifiers through the connectors to learn what runs where, how much traffic it carries, who calls it, and what it depends on. Deterministic. |
 | **Run memory** | What discovery produced in this session. Kept for the run, summarized in the report, then gone. |
-| **Dimension** | One of the six questions every review answers. Each gets a verdict. |
+| **Quality / dimension** | One of the seven properties every safe change has. The program defines them; the report gives each a verdict. |
 | **Finding** | One claim with evidence, under one dimension, with a severity: `info`, `warning`, `blocking`. |
 | **Question** | What the lead asks when it cannot derive an identifier: yes/no, with the file change each answer implies. |
 | **Proposal** | A change to `.paved-agent/` the agent wants made, applied by the proxy as a commit or a suggested change. |
 | **Check** | The GitHub status on the PR (`impact`) that carries the verdict and gates merge. |
 | **Fixture** | A sample PR with a known expected outcome, used as a live test. |
-| **Obligation** | One thing a review must establish for a given kind of change, with the evidence that establishes it and the severity when it cannot be. The agent's program is a catalogue of these. |
+| **Obligation** | What a quality means for one specific change: derived by the lead at the start of a review from the quality's definition, with the evidence that establishes it and the severity when it cannot be. |
 
 ## 2. Goals, non-goals, assumptions
 
@@ -66,8 +66,8 @@ Goals
 - Any production modification that arrives as a PR: code, Kubernetes
   manifests, cloud infrastructure (Terraform, Pulumi, Crossplane), dynamic
   configuration — including pure code changes with no manifest in the diff.
-- The agent's program is a reviewable specification — obligations and
-  evidence rules — not prose. A stronger model runs the same program
+- The agent's program is a reviewable specification — seven qualities
+  with their evidence rules, instantiated per change — not prose. A stronger model runs the same program
   better; a human can read and amend it.
 - Findings with evidence: a metric, a file and line, a cloud API response,
   or a human's answer. Never an unsupported claim.
@@ -95,22 +95,25 @@ Assumptions
   and other repositories in the org read through the `scm` connector.
 - Cloud providers are parameters, not assumptions: `cloud_get("gcp", …)`.
 
-## 3. The six dimensions
+## 3. The seven qualities (the report's dimensions)
 
-Every report has a verdict per dimension and findings under it. The lead
-judges the dimensions; the specialists supply the facts.
+Every report has a verdict per quality and findings under it. The lead
+instantiates and judges the qualities (§5.1); the specialists supply the
+facts.
 
-| Dimension | The question | Evidence that answers it |
+| Quality | The question | Evidence that answers it |
 |---|---|---|
-| **Blast radius** | Where does the changed code run, who depends on it, and what is the worst case if it is wrong? | instances per cluster and environment; traffic and callers per cluster; whether the service is reachable from outside the cluster; rollout staging (per-cluster canary or global); feature flags; other open PRs' assessed impact on the same services |
-| **Correctness** | Does the change do what the PR says, honour its contract, and work where it runs? | the diff against the proto/API contract (field semantics, validation rules, `buf breaking` against the base) and the ADRs or docs it references; a new dependency's onboarding (network policy, authorization, mesh membership); whether authentication, authorization and encryption in transit match the sensitivity of the data a new call carries; config keys and credentials present in the pod template for each cluster; IAM and resource existence for cloud access |
-| **Scale** | Can the system carry the load this change adds or redirects, including the load it would see when things go wrong? | added rps from new callers against the callee's current rps, in-flight work and p99; CPU and memory against limits; desired replicas and the autoscaler ceiling; whether callers are internal (known rps) or external (unbounded, possibly adversarial); **retry amplification**: if this service starts failing, do its callers' retry policies multiply the load; server-side rate limiting and per-tenant isolation as the defence |
-| **Resilience** | Does it fail small and recover? | deadlines and their propagation; retry sanity (idempotency, budgets, backoff); bounded work; backpressure and load shedding; canary with analysis — and for a critical fix, whether the service *has* a staged rollout at all; PDB and spread; rollback without data migration; hardening gaps in the deployment that the change makes matter (probes, PSS, capabilities, limits); for infrastructure, how the provider applies the change (replace = delete then create) and what a partial apply leaves behind |
-| **Debuggability** | When it fails, can an operator tell, and where? | logs/metrics/traces on the new path; error wrapping and status codes; whether the new signal has an alert rule; a flag to turn it off; a runbook entry |
-| **Test coverage** | Is the behaviour, including its failure cases, proven and described? | unit tests for the new path and its error branches; e2e coverage of the call or resource; documented behaviour under failure (what the caller sees, what the operator sees) |
+| **Correctness** | Does the change do what the PR says, and does the system around it let it? | the diff against the contract it relies on (signature, field semantics, validation, documented decisions, `buf breaking` against the base); a new dependency's onboarding (network policy, authorization, mesh membership); whether authentication, authorization and encryption in transit match the sensitivity of the data a new call carries; configuration and credentials present where the code runs; IAM and resource existence for cloud access |
+| **Compatibility** | Do old callers, old data and old callees still work against this, during rollout and after rollback? | wire compatibility of the contract; handling of absent or extra fields; data written by the old version read by the new and vice versa; mixed-version behaviour during a staged rollout |
+| **Blast radius** | What is the worst case if this is wrong, and does the rollout make it small? | instances per cluster and environment; callers and external exposure; what fails and whether it is contained; staged rollout with automatic analysis, per cluster; rollback without data migration; other open PRs on the same services |
+| **Scalability** | Can the system carry the load this adds or redirects? | added rate against current rate, in-flight work and p99; CPU and memory against limits; desired replicas and the autoscaler ceiling; internal versus external callers |
+| **Resilience** | Do service objectives hold when something fails? | deadlines and their propagation; retry budgets and amplification; bounded work; backpressure and load shedding; per-caller limits; what the caller sees when the callee is gone; disruption budgets and spread; hardening the change makes matter (probes, security standards, capabilities, limits); for infrastructure, how the provider applies the change and what a partial apply leaves |
+| **Debuggability** | If it does not have the intended effect, how would anyone know, and find out why? | signals on the new path (logs, metrics, traces); error wrapping and status codes; an alert on the new signal; a flag to turn it off; a runbook entry |
+| **Testability** | Is the behaviour, including its failure cases, proven and described? | unit tests for the new branches; end-to-end coverage of the call or resource; documented behaviour under failure |
 
-"No impact on this dimension, and here is why" is a finding, not an
-absence.
+"No impact on this quality, and here is why" is a finding, not an
+absence. Blast radius sets the weight of the others: a change whose worst
+case is trivial needs less proof, not none.
 
 ## 4. The journey
 
@@ -119,7 +122,7 @@ absence.
 1. They open a PR. A required check named `impact` appears, in progress.
 2. A few minutes later, one of two things happens:
    - **The report lands.** The check completes with a verdict and a
-     comment summarizes the six dimensions. `info` passes, `warning`
+     comment summarizes the seven qualities. `info` passes, `warning`
      passes with a visible note, `blocking` fails the check.
    - **A question lands.** The agent could not work out something it
      needs — most often, where the service runs. The check turns to
@@ -155,7 +158,7 @@ resolved), not plain issue comments.
 |---|---|---|
 | `impact — queued` | The controller received the PR event and is creating the session. | Session created. |
 | `impact — discovering` | Specialists are following the identifiers (or deriving them). | Discovery done, or an identifier could not be derived. |
-| `impact — assessing` | The lead is judging the six dimensions. | Report written. |
+| `impact — assessing` | The lead is judging the seven qualities. | Report written. |
 | `impact — action required: pending human response` | A question is open. Merge is blocked. | A reply on the thread, or a commit to `.paved-agent/` on the PR branch, which re-queues; or someone other than the author resolves the thread, which waives it and re-queues. |
 | `impact — passed` / `passed with warnings` / `failed` | The report is attached and summarized. | A new push re-queues. |
 
@@ -188,7 +191,7 @@ middle four involve the agents.
    state, firing alerts — are the run memory. An identifier that returns
    nothing anywhere is treated as broken: derivation restarts, and the
    result is a proposal or a question.
-4. **Analysis.** The lead reasons through the six dimensions with the
+4. **Analysis.** The lead reasons through the seven qualities with the
    diff, the contract, the author-stated documents the repository
    references, and the run memory. Where a dimension needs more evidence,
    it goes back to a specialist.
@@ -210,7 +213,7 @@ establish for each kind of change is its program, described next. The
 milestone-1 rules stay in the tree only until M2 measures whether a
 deterministic pre-pass saves enough tokens to keep.
 
-### 5.1 The program: obligations, not instructions
+### 5.1 The program: qualities, instantiated per change
 
 The thesis (from `subbu-thoughts.md`): the system prompt and the tools,
 together with what the model already knows, are a programming language
@@ -219,81 +222,101 @@ assumptions — Kubernetes, and every change through source control —
 shrink the domain enough that the model's training covers the rest: the
 handful of ways a pod reaches a cloud, the few service meshes and their
 metrics, the few policy engines, the three infrastructure tools. We do
-not teach the model those. We tell it what must be *established*.
+not teach the model those. We tell it what a safe change *is*.
 
-So the lead's system prompt is not a narrative of steps. It is a
-catalogue: for each **kind of change**, a list of **obligations**; for
-each obligation, the **evidence** that discharges it, the **connector**
-that yields the evidence, and the **severity** when it cannot be
-discharged. The model plans how to get there. A stronger model plans
-better against the same catalogue; a human reads the catalogue and
-amends it with a PR.
+So the lead's system prompt is not a narrative of steps, and it is not a
+catalogue of kinds of change either — kinds are open-ended, and a
+catalogue indexed by them is never finished. It is a short list of
+**qualities** every change must have. For each quality: a definition
+that does not depend on the change, guidance for **instantiating** it —
+deriving what the quality means for *this* diff — the **classes of
+evidence** that establish it, and the rules for **severity** and
+**weight**. The model derives the obligations; a stronger model derives
+them better against the same list; a human reads the list and amends it
+with a PR.
 
-The catalogue is a file (`internal/agents/obligations.yaml`) rendered
-into the prompt, so it is reviewed, versioned and evaluated like code.
-An excerpt, for the kind *new dependency on a service*:
+The seven qualities are the report's seven dimensions (§3): correctness,
+compatibility, blast radius, scalability, resilience, debuggability,
+testability.
+
+The lead's first act in every review is to write the instantiation —
+"for this change, correctness means …; the worst case is …, so rollout
+matters this much; compatibility means …" — and that plan is part of the
+report. It is reviewable, and it is the first thing the evals check:
+did the agent ask the right questions of this change?
+
+The program is a file (`internal/agents/qualities.yaml`) rendered into
+the prompt, so it is reviewed, versioned and evaluated like code. Two
+entries, to show the shape:
 
 ```yaml
-kind: new-call
-  trigger: the diff constructs a client for, or starts sending requests to, a service it did not before
-  obligations:
-    - id: contract
-      establish: the call is contractually valid — the callee's current proto has the method,
-                 the fields sent exist with the meaning the caller assumes
-      evidence: the callee's proto at its deployed revision (scm), the call site (sandbox)
-      if_not: blocking
-    - id: onboarding
-      establish: the caller is allowed to reach and call the callee — network policy, authorization
-                 policy, mesh membership — in every cluster where both run
-      evidence: the callee's and caller's policies in the intent (scm); the mesh's view of who may call (metrics)
-      if_not: blocking
-    - id: data-protection
-      establish: authentication, authorization and encryption in transit match the sensitivity of
-                 the data the call carries (judge sensitivity from the proto fields: identifiers,
-                 financial, health, credentials)
-      evidence: the mesh mode (mTLS strict or not) and the authorization policy's granularity (scm, metrics)
-      if_not: blocking for sensitive data, warning otherwise
-    - id: capacity
-      establish: the callee can carry the added load — new rps against current rps, in-flight work
-                 and p99; CPU and memory per replica against limits; desired replicas and the ceiling;
-                 estimate the replicas needed at the new load
-      evidence: the profile's queries for the callee (metrics)
-      if_not: blocking if the estimate exceeds the ceiling, warning if it exceeds desired
-    - id: retry-amplification
-      establish: if the callee starts failing, the caller's retry policy and the mesh's defaults do
-                 not multiply the load; the callee limits per-caller load
-      evidence: the call site and client config (sandbox), VirtualService retries (scm), server-side limits (scm)
-      if_not: warning; blocking if the caller is reachable from outside the cluster
-    - id: deadline
-      establish: the call carries a deadline shorter than the caller's own, and a fallback or a
-                 clear failure when the callee is down
-      evidence: the call site (sandbox)
-      if_not: blocking without a deadline, warning without a fallback
-    - id: observability
-      establish: the call is counted, timed and traced, and its errors are wrapped with context
-      evidence: the call site and the interceptors in use (sandbox)
-      if_not: warning
-    - id: tests
-      establish: the new path and its failure cases (unavailable, slow, denied) are tested
-      evidence: the test files touched (sandbox)
-      if_not: warning
+quality: correctness
+  definition: the change does what the PR says, and the system around it lets it
+  instantiate: |
+    Ask what the change *relies on* that it did not write. A call to an API relies on the
+    signature (the request is built and the response parsed as the callee defines them at its
+    deployed revision) and on the infrastructure allowing the call (reachability, authorization,
+    identity). A change inside a handler relies on the enclosing API's contract still holding
+    (field meanings, validation, error semantics, documented decisions). A change that reads
+    configuration relies on the configuration existing where the code runs. Each reliance is
+    one obligation.
+  evidence:
+    code:     the call site, the handler, the tests           (sandbox)
+    intent:   the callee's contract, policies, configuration   (scm)
+    actual:   who is reachable and authorized today           (metrics)
+  severity: a reliance that is false where the code runs is blocking; one that is undocumented
+            but true is a warning
+  weight: always full
+
+quality: blast-radius
+  definition: the worst case if the change is wrong is small, or the way it is rolled out makes it small
+  instantiate: |
+    Establish the worst case first: where the code runs (instances, environments), who depends on
+    it (callers, external exposure), what fails if it is wrong (a request path, a scheduled job, a
+    whole service), and whether the failure is contained (a flag, a subset of traffic) or total.
+    If the worst case is low, say so and stop. If it is high, establish how the change reaches
+    production: a staged rollout that automatically judges error rate and latency before
+    proceeding, per cluster rather than everywhere at once, with a rollback that needs no data
+    migration. A high worst case with no staged rollout is the finding; the absence of a
+    particular tool is never the finding.
+  evidence:
+    actual:   instances, callers, exposure, traffic per cluster (metrics)
+    intent:   the rollout strategy, analysis, flags           (scm)
+  severity: high worst case without a staged, analysed rollout is blocking; with one, a warning
+            that names the case; low worst case is info
+  weight: sets the weight of every other quality — a change with a trivial worst case needs
+          less proof of resilience and scalability, not none
 ```
 
-Other kinds in the catalogue, each with its own obligations: *business
-logic change* (contract and ADR consistency; whether a critical fix has a
-staged rollout to ride on; which callers' inputs reach the changed
-branch), *Kubernetes manifest change* (hardening gaps the change makes
-matter: probes, PDB, spread, Pod Security Standard, capabilities,
-limits), *cloud resource access from code* (a credential path exists for
-the pod; IAM grants the role; the resource exists and is protected),
-*infrastructure change* (quota at maximum scale; apply semantics —
-replace means delete then create; what a partial apply leaves; plan
-versus the PR's description), *dynamic configuration change* (who reads
-it, when it takes effect, whether it can be reverted without a deploy).
+The other five follow the same shape. In one line each, what they
+instantiate to:
 
-Obligations map onto the six dimensions for the report, but the program
-is written per kind of change because that is how a reviewer thinks: "it
-is a new call, so I must establish these eight things."
+- **compatibility** — old callers and old data against the new code, and
+  the new code against old callees, during the rollout and after a
+  rollback (mixed versions are the normal state, not the exception).
+- **scalability** — load this change adds or redirects, against the
+  capacity behind it: current rate, in-flight work, latency, CPU and
+  memory per replica, desired replicas and the autoscaler's ceiling;
+  internal callers (known rate) versus external (unbounded).
+- **resilience** — service objectives continue to hold when something
+  fails: deadlines, retry budgets and the amplification they can cause,
+  bounded work, load shedding, per-caller limits, what the caller sees
+  when the callee is gone; hardening the change makes matter.
+- **debuggability** — if the change does not have its intended effect,
+  how an operator would know and find out: signals on the new path,
+  wrapped errors, an alert, a flag to turn it off, a note in the runbook.
+- **testability** — the behaviour and its failure cases are proven:
+  tests for the new branches, end-to-end coverage of the call or
+  resource, and the failure behaviour written down.
+
+Two rules the file enforces on itself. **No product names**: the program
+says "staged rollout with automatic analysis", "service-to-service
+authorization", "cluster state metrics", never the name of a tool; names
+belong to profiles and connector adapters, and a test fails the build if
+one appears in a rendered prompt. **Kinds of change are examples, not
+structure**: the worked instantiations for a new call, a handler change,
+a manifest change, an infrastructure change live in the evals as fixtures
+and in the prompt as at most two short examples, to calibrate.
 
 The specialists have the same shape in miniature: each has a system
 prompt saying what facts it returns and from which connector, not how to
@@ -597,18 +620,22 @@ empty. No manifest changes. `discover.yaml` exists.
   are possible. The lead also reads `frontend`'s retry configuration for
   this call and `hello`'s server-side limits, because a new error path is
   also a new retry path.
-- **Blast radius:** warning — 3 clusters, 1 internal caller, canary with
-  analysis in staging and prod, none in dev. **Correctness:** warning —
+- Instantiation: worst case is every `hello` request from `frontend`
+  returning an error — contained to one RPC, one caller; weight medium.
+- **Correctness:** warning —
   the proto does not declare `name` required and `frontend` forwards user
   input unchecked, so empty names become `InvalidArgument` surfaced to
   users; either document it in the proto or validate in `frontend`.
-  **Scale:** info — no load change; `frontend` does not retry on
+  **Compatibility:** info — no wire change; old `frontend` builds simply
+  see a new error code. **Blast radius:** warning — 3 clusters, 1
+  internal caller, staged rollout with analysis in staging and prod, none
+  in dev. **Scalability:** info — no load change; `frontend` does not retry on
   `InvalidArgument` (its retry policy covers `UNAVAILABLE` only), so a
   burst of empty names cannot amplify; `hello` has a per-caller admission
   limit as a backstop. **Resilience:** info — the canary's analysis counts
   `InvalidArgument` as a client error, so it would not roll back on it;
   said so. **Debuggability:** info — the status code is counted by the
-  platform's interceptor; no alert on it, none needed. **Test coverage:**
+  platform's interceptor; no alert on it, none needed. **Testability:**
   warning — the handler test covers the new branch; no test in `frontend`
   for the error it now receives.
 - Questions: none. Proposals: none.
@@ -629,11 +656,15 @@ calls `GetBalance` per page view. `service.yaml` untouched.
   constructor: dials `ledger.ledger.svc:8080` plain, relies on the mesh;
   no deadline; the mesh's default retry policy retries `UNAVAILABLE` twice.
   Reads `ledger`'s `service.yaml`: `frontend` not in `authorizedCallers`.
-- **Blast radius:** warning — every page view now depends on `ledger`;
-  no other open PR touches `ledger`. **Correctness:** blocking —
+- Instantiation: worst case is every page view failing or slowing when
+  `ledger` does — total for `frontend`'s users; weight full.
+- **Correctness:** blocking —
   `frontend`'s `egress` lacks `ledger` and `ledger` does not authorize
   `frontend`; the platform's access-request flow is the fix; the e2e
-  would fail. **Scale:** blocking — +250% against a ceiling of 3 replicas
+  would fail. **Compatibility:** info — `GetBalance` is stable; the
+  client is generated from the deployed proto. **Blast radius:** warning
+  — every page view now depends on `ledger`; no other open PR touches
+  `ledger`; the rollout is staged. **Scalability:** blocking — +250% against a ceiling of 3 replicas
   already at 70% CPU and 75% of the in-flight threshold; an external
   caller now drives load into an internal service with no per-caller
   limit on `ledger`'s side; and if `ledger` starts returning `UNAVAILABLE`,
@@ -641,8 +672,7 @@ calls `GetBalance` per page view. `service.yaml` untouched.
   **Resilience:** blocking — no deadline; no fallback when `ledger` is
   down, so a `ledger` outage is a `frontend` outage. **Debuggability:**
   warning — the call is instrumented by the platform's client interceptor
-  but the handler swallows the error into a 500 without wrapping. **Test
-  coverage:** warning — no test for `ledger` unavailable or slow.
+  but the handler swallows the error into a 500 without wrapping. **Testability:** warning — no test for `ledger` unavailable or slow.
 - Questions: none. Proposals: none (callers and callees are derived, not
   recorded).
 - Verdict: blocking. Cost estimate: $1.5–2.5.
@@ -664,11 +694,13 @@ Diff: `internal/export/gcs.go` writes daily exports to the bucket named by
 - Second run: `cloud_get("gcp", "gs://ledger-exports", "iam")` → no
   binding for any `ledger` identity; `protection` → retention 30 days,
   no deletion protection.
-- **Blast radius:** info — 3 clusters, a scheduled path. **Correctness:**
-  blocking — config absent at runtime; no credential path; no IAM grant.
-  **Scale:** info. **Resilience:** warning — no timeout on the upload; no
+- Instantiation: worst case is the export never running — a scheduled
+  path, no request impact; weight low, except correctness.
+- **Correctness:** blocking — config absent at runtime; no credential
+  path; no IAM grant. **Compatibility:** info. **Blast radius:** info — 3
+  clusters, a scheduled path. **Scalability:** info. **Resilience:** warning — no timeout on the upload; no
   retry; a 2 GB export streamed from memory. **Debuggability:** warning —
-  errors logged without the bucket or object name. **Test coverage:**
+  errors logged without the bucket or object name. **Testability:**
   warning — no test for the upload failing.
 - Verdict: blocking. Cost estimate: $1.5–2.5 across the two runs.
 
@@ -690,7 +722,7 @@ Diff: any handler change in `greeter`. No `.paved-agent/`.
 - The lead reads the diff: behaviour-preserving, tests unchanged and
   passing in CI. Discovery follows `echo`'s identifiers (cheap) so the
   report still states where it runs.
-- Verdict: info, six dimensions "no impact" with the reason. Cost: under
+- Verdict: info, seven qualities "no impact" with the reason. Cost: under
   $0.3. This case keeps the cheap path cheap.
 
 ## 9. Connectors and tools
@@ -826,7 +858,7 @@ The report contract, the connectors and the profiles do not change.
 cmd/change-agent      setup | review | worker | proxy
 deploy/               kind manifests: sandbox and proxy Deployments, NetworkPolicy, Service
 internal/change       the change (exists)
-internal/findings     report contract: six dimensions, findings, unknowns, questions, proposals
+internal/findings     report contract: seven qualities, findings, unknowns, questions, proposals
 internal/identifiers  .paved-agent/discover.yaml: schema, load, lint (identifiers only)
 internal/profile      capability probe; profiles: kube-state-metrics+istio first
 internal/proxy        the HTTP service: slots, adapters, policy, audit, config, repo tarballs;
@@ -876,18 +908,21 @@ There is no separate learning step: nothing else is learned.
 
 ```json
 {"change":"org/repo#N@sha",
- "dimensions":{
-   "blast_radius":{"verdict":"warning","summary":"…"},
+ "instantiation":{"worst_case":"…","weight":"full",
+                  "obligations":[{"quality":"correctness","establish":"…"}]},
+ "qualities":{
    "correctness":{"verdict":"blocking","summary":"…"},
-   "scale":{"verdict":"blocking","summary":"…"},
+   "compatibility":{"verdict":"info","summary":"…"},
+   "blast_radius":{"verdict":"warning","summary":"…"},
+   "scalability":{"verdict":"blocking","summary":"…"},
    "resilience":{"verdict":"blocking","summary":"…"},
    "debuggability":{"verdict":"warning","summary":"…"},
-   "test_coverage":{"verdict":"warning","summary":"…"}},
+   "testability":{"verdict":"warning","summary":"…"}},
  "discovery":{"followed":["workloads[0]"],"broken":[],
               "by_env":{"prod":{"clusters":["prod-us","prod-eu"],"instances":4,"rps":4.8,
                                 "callers":["frontend"],"external":false,"owner":"Rollout","ceiling":4}},
               "cpu_of_limit":{"prod-us":0.12}},
- "findings":[{"dimension":"scale","severity":"blocking","claim":"…",
+ "findings":[{"quality":"scalability","severity":"blocking","claim":"…",
    "evidence":[{"kind":"metric","source":"metrics.query","query":"…","value":"…"}],
    "recommendation":"…","confidence":0.85,"studied":["frontend","ledger"]}],
  "unknowns":[{"what":"…","tried":["…"],"blocks":["blast_radius","scale"]}],
@@ -906,12 +941,12 @@ writes to git directly.
 
 | Agent | Model | Connector access | Owns |
 |---|---|---|---|
-| lead | claude-opus-5, effort high | sandbox tools, `change_diff`, `scm.open_prs`, `metrics.rules`, `alerts`, `ask`, `propose`; may delegate to the three below | reading the code, deciding what to discover, judging the six dimensions, questions, proposals, the report |
+| lead | claude-opus-5, effort high | sandbox tools, `change_diff`, `scm.open_prs`, `metrics.rules`, `alerts`, `ask`, `propose`; may delegate to the three below | reading the code, deciding what to discover, judging the seven qualities, questions, proposals, the report |
 | org finder | claude-sonnet-5 | `scm.search_code`, `scm.mount`, sandbox tools | finding and mounting the defining repository |
 | topology discoverer | claude-sonnet-5 | sandbox tools, `metrics`, `logs` | following and deriving workload identifiers; placement, scale inputs, exposure, identity, configuration presence |
 | cloud discoverer | claude-sonnet-5 | `cloud_get` | following cloud references; identity and IAM |
 
-The six-dimension judgment is done by the lead itself in M2, in one
+The seven-quality judgment is done by the lead itself in M2, in one
 context that holds all the facts. The specialists are unaffected by that
 choice: they discover; they do not judge. If reports get long or slow,
 the judgment can be split into per-dimension analysts fed by the lead's
@@ -944,7 +979,7 @@ monthly total and refuses past the cap.
 
 | Layer | What | How | Pass |
 |---|---|---|---|
-| Unit | identifier schema and lint; capability probe → profile selection; profile query rendering; owner-kind resolution (Rollout, Deployment, StatefulSet, DaemonSet, unknown); external-exposure detection; report validation; check-state transitions; proxy policy (read-only methods, path restriction on `propose`, limits) | `go test` | green |
+| Unit | no product names in any rendered prompt (denylist test); identifier schema and lint; capability probe → profile selection; profile query rendering; owner-kind resolution (Rollout, Deployment, StatefulSet, DaemonSet, unknown); external-exposure detection; report validation; check-state transitions; proxy policy (read-only methods, path restriction on `propose`, limits) | `go test` | green |
 | Recorded | `discover` against recorded kube-state-metrics/Istio/Argo responses from the sgrpc fleet, grouped by env; `cloud_get` against recorded GCP responses | fixtures under `evals/recorded`, no model | deterministic |
 | Derivation | the bootstrap chain on each demo repo reproduces the hand-written `discover.yaml` | `go test` with the repos vendored as fixtures, plus one live run per repo | equal, or a documented difference |
 | Live fixtures | the five PRs of section 8 as open drafts in the demo org | `make eval-live` (budgeted) | per fixture: required findings present (by dimension, entity, severity), no forbidden claims, cost ≤ cap, questions == expected, proposals == expected files |
@@ -967,7 +1002,7 @@ re-runs the fixtures and diffs the judge scores before it is merged.
   sandbox and proxy deployed on kind with the NetworkPolicy;
   kube-state-metrics and Istio metrics on the sgrpc fleet; hand-written
   identifiers for the demo repos; fixtures A, D, E. Exit: A reviewed with
-  six dimensions; D asks exactly one question and passes after the file
+  seven qualities; D asks exactly one question and passes after the file
   lands; E under $0.3; the derivation test matches the hand-written files.
 - **M3 — cross-repo and signals.** Org finder, `scm.open_prs`, `logs` and
   `alerts` slots, fixture B. Exit: B blocks for correctness, scale and
@@ -1030,14 +1065,14 @@ until there are enough production-derived ones to run it unattended.
 
 ## 16. Decided
 
-1. Six dimensions: blast radius, correctness, scale, resilience,
+1. Seven qualities: blast radius, correctness, scale, resilience,
    debuggability, test coverage.
 2. Author-stated invariants are enforced from the referenced docs;
    agent-inferred ones are derived at review time from similar code in
    the same repository and never stored.
 3. Bash is on inside the kind-deployed sandbox pod; the NetworkPolicy,
    the absence of credentials and the pod's hardening are the boundary.
-4. The six-dimension judgment is the lead's job in M2; the specialists
+4. The seven-quality judgment is the lead's job in M2; the specialists
    discover and do not judge.
 
 ## 17. Open for review
@@ -1050,10 +1085,10 @@ until there are enough production-derived ones to run it unattended.
    matters most to support next: a meshless fleet with OTel/gRPC metrics
    (same facts, different metric names), or Google Cloud Monitoring's
    native Kubernetes metrics (for fleets with no kube-state-metrics)?
-5. **The obligations catalogue** in §5.1 is an excerpt for one kind of
-   change. Before M2's prompts are written, the full catalogue — six kinds,
-   their obligations — is the thing to review most carefully; it is the
-   program.
+5. **The qualities file** (§5.1) shows two of seven entries. Before M2's
+   prompts are written, all seven — definitions, instantiation guidance,
+   evidence classes, severity and weight — are the thing to review most
+   carefully; it is the program.
 3. **Multiple proxies.** When prod is its own trust boundary, the
    controller fans one discovery out to several proxies and merges by
    cluster. Fine to leave this out of M2 and run one proxy over all
