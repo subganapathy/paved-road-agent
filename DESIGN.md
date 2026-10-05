@@ -204,7 +204,7 @@ middle four involve the agents.
 ```
  PR ──▶ intake ──▶ bootstrap ──▶ discovery ──▶ analysis ──▶ report ──▶ propose
         (code)    (derive or    (specialists, (lead,       (code:      (code:
-                   ask)          determin-     six          check,      commit or
+                   ask)          determin-     seven        check,      commit or
                                  istic)        dimensions)  comment)    suggestion)
 ```
 
