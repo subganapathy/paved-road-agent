@@ -587,12 +587,34 @@ procedure of generic steps, not as a table:
    specialist writes that mapping down as part of the run memory, with
    the queries it chose, so the report can show its work and the evals
    can check it against the environment's known architecture.
-5. **Form the queries and follow the identifiers.** Pods are the unit for
+5. **Bind the service to its stack — the fleet may have several.** A
+   company can run one mesh for its control plane and a different,
+   possibly home-grown, Envoy-based mesh for its data plane; progressive
+   delivery in one and plain Deployments in the other; two policy
+   enforcers during a migration. Step 1 therefore yields *candidate*
+   stacks, plural, and the specialist must determine which one the
+   changed service actually rides on, from evidence about *its* pods:
+   the sidecar or proxy container present in its pod template and
+   reported by the cluster-state metrics; the namespace labels and pod
+   annotations that enrol it in a mesh; whether the mesh's request
+   metrics report *this* workload as a destination; the workload kind
+   its manifests use. A service that appears in two meshes (mid-migration)
+   is reported as such, with both sets of evidence. A mesh the model has
+   never seen — a custom control plane driving stock Envoy — is still
+   identifiable from what Envoy itself exports and from the control
+   plane's own manifests; the report names it by what the manifests call
+   it and maps the qualities' questions to the generic Envoy statistics
+   or to intent only, and says which.
+6. **Form the queries and follow the identifiers.** Pods are the unit for
    counting instances regardless of workload kind; the owner chain
    (pod → ReplicaSet → Deployment or Rollout; pod → StatefulSet;
    pod → DaemonSet) tells it which object holds the desired count and
    which autoscaler sets the ceiling. All of this is the model's
-   knowledge applied to what step 1 returned.
+   knowledge applied to what steps 1–5 returned.
+
+Stack discovery is therefore per service, not per fleet: the question
+is always "what does *this* workload run on", and the fleet-level
+inventory from step 1 is only the list of possibilities.
 
 What this costs: a few extra connector calls per run on the smaller
 model. What it buys: a fleet with a stack we never anticipated gets the
@@ -857,7 +879,7 @@ Nothing in M2 is built in a way that blocks this; two things move:
   boundary.
 
 Tenant isolation is one proxy, one environment, one budget per tenant.
-The report contract, the connectors and the profiles do not change.
+The report contract and the connectors do not change.
 
 ### 10.4 Sandboxes per tenant (future project)
 
@@ -1112,7 +1134,7 @@ build toward; the fourth is a research question we do not claim to solve.
 
 2. **Improving the program through evaluation.** The program is text and
    code under version control: the obligations catalogue, the system
-   prompts, the profiles. A change to it is a PR, and the fixtures plus
+   prompts, the specialists' procedures. A change to it is a PR, and the fixtures plus
    the judge are its test suite. That makes the ordinary engineering loop
    available — propose a change, run the evals, keep it if the scores
    rise — and it makes the loop automatable: a session whose task is "the
@@ -1134,9 +1156,9 @@ build toward; the fourth is a research question we do not claim to solve.
    PR loop it reviews.
 
 4. **Learning new capabilities.** When a fixture fails because the
-   program *cannot* express the fix — a metrics dialect the profile does
-   not know, a derivation step the chain lacks — the change is code, not
-   prompt: a new profile, a new connector adapter, a new obligation kind.
+   program *cannot* express the fix — a backend no connector adapter
+   speaks, a derivation step the chain lacks — the change is code, not
+   prompt: a new connector adapter, a new step in the procedure.
    An agent can draft it; a human reviews it as any code. What we do not
    attempt is learning inside the model's weights; the program stays
    outside the model, where it can be read.

@@ -25,6 +25,7 @@ them.
 | Id | Mesh | Network policy enforcer | Admission policy | Deployment tool / workload kind | Metrics | What it exercises |
 |---|---|---|---|---|---|---|
 | **E1 `istio-argo`** (2 clusters: `e1-dev`, `e1-prod`) | Istio, sidecar, STRICT mTLS | Calico | Gatekeeper (require limits, deny privileged, require labels) | Argo CD + Argo Rollouts (canary with analysis in prod, none in dev); KEDA | Prometheus + kube-state-metrics + Istio standard metrics + Rollouts and Argo CD metrics | the stack vikrant generates; env grouping; staged rollout present |
+| **E1-dp `mixed`** — the same `e1-prod` cluster, a second set of namespaces (`dp-*`) | a **custom Envoy-based mesh**: stock Envoy sidecars injected by a small in-cluster xDS control plane (`meshd`), its own mTLS CA, no Istio injection in these namespaces | Calico | Gatekeeper | Argo CD, plain Deployments, **no Rollouts**, no autoscaler | the same Prometheus: `envoy_*` statistics from the sidecars, no `istio_*` for these workloads | **two meshes in one cluster**; the model must bind each service to the mesh *it* runs on, recognise a mesh it has never seen from Envoy's own metrics and the control plane's manifests, and notice that progressive delivery exists in the cluster but not for this service |
 | **E2 `linkerd-flux`** | Linkerd, STRICT (default) | Cilium (`CiliumNetworkPolicy`) | Kyverno (same three rules) | Flux (`Kustomization`), plain Deployments + HPA; **no canary** | Prometheus + KSM + Linkerd proxy metrics + Flux metrics | a second mesh dialect; no staged rollout → blast-radius finding; Cilium drop metrics as evidence |
 | **E3 `ambient-plain`** | Istio ambient (ztunnel; one waypoint for `ledger`) | Cilium | none; namespaces labelled Pod Security `restricted` | `kubectl apply` from CI — **no GitOps controller**, StatefulSet for `ledger` | Prometheus + KSM + ztunnel/waypoint metrics | no drift signal (intent only); L4-only metrics where no waypoint; StatefulSet owner chain; PSA rejects instead of a policy engine |
 | **E4 `bare`** | none | kind default (kindnet): NetworkPolicy objects exist **but are not enforced** | none | Argo CD, Deployments, no autoscaler | Prometheus **without** kube-state-metrics | plaintext traffic → data-protection finding; "policy present but not enforced"; capability probe degrades to intent-only; ceiling = desired |
@@ -42,6 +43,7 @@ Three small Go gRPC services in the demo org, written for this purpose
 smallStepGiantLeap/pra-frontend   HTTP → gRPC gateway; calls hello; exposed via the ingress gateway
 smallStepGiantLeap/pra-hello      Hello(name) → greeting; calls nothing
 smallStepGiantLeap/pra-ledger     GetBalance(account); holds state (StatefulSet in E3); the target of the new-dependency PRs
+smallStepGiantLeap/pra-stream     a data-plane service deployed only in E1-dp: custom Envoy sidecar, plain Deployment; the target of the mixed-mesh PRs
 smallStepGiantLeap/pra-infra      Terraform: Kubernetes provider resources on the kind cluster (namespaces, PVCs, quotas) + one recorded GCP plan
 ```
 
@@ -84,30 +86,32 @@ missing required finding or a forbidden claim fails the fixture.
 | **P8** refactor: rename a private function in `hello` | info on all seven, under $0.30 | same | same | same |
 | **P9** debuggability: `ledger` adds a new error path with no metric and swallows the cause | debuggability **warning** (no signal, no alert rule mentions it) | same | same | same |
 | **P10** dynamic configuration: `ledger`'s ConfigMap changes a timeout from 2s to 200ms | resilience **warning** (which calls this bounds; takes effect on next pod restart only — cite the mount type); blast radius names the env | same | same (and notes no GitOps controller will roll it) | same |
+| **P11** mixed mesh, new dependency: `frontend` (Istio) starts calling `stream` (custom Envoy mesh) | E1-dp only: correctness **blocking** — the two meshes do not share identities, so Istio's mTLS to `stream` fails or falls to plaintext at the custom sidecar; the report names both meshes and says which one each service runs on, with evidence (sidecar containers, namespace labels, which metric family reports each workload) | — | — | — |
+| **P12** mixed mesh, business logic: a change in `stream` that could error on existing input | E1-dp only: blast radius **blocking** — Rollouts exist in this cluster but `stream` is a plain Deployment with no staged rollout; the finding must not be misled by the cluster-wide presence of a progressive-delivery controller | — | — | — |
 
 Discovery expectations per environment (checked on every run, any PR):
 
 | | E1 | E2 | E3 | E4 |
 |---|---|---|---|---|
-| mesh and mTLS | Istio sidecar, STRICT | Linkerd, mTLS on | Istio ambient, L4 everywhere, L7 at `ledger` | none, plaintext |
+| mesh and mTLS | Istio sidecar, STRICT; **and**, for `dp-*` namespaces, a custom Envoy-based mesh (`meshd`) with its own CA — reported per service, not per cluster | Linkerd, mTLS on | Istio ambient, L4 everywhere, L7 at `ledger` | none, plaintext |
 | policy enforcer | Calico, enforcing | Cilium, enforcing | Cilium, enforcing | kindnet, **not enforcing** |
 | admission | Gatekeeper + 3 constraints | Kyverno + 3 policies | Pod Security `restricted` | none |
 | deployment tool / drift signal | Argo CD, `argocd_app_info` | Flux, `gotk_reconcile_condition` | none — intent only | Argo CD |
-| workload kinds | Rollout | Deployment + HPA | Deployment, StatefulSet | Deployment |
+| workload kinds | Rollout; Deployment for `dp-*` | Deployment + HPA | Deployment, StatefulSet | Deployment |
 | metrics capabilities | KSM, Istio, Rollouts, KEDA | KSM, Linkerd | KSM, ztunnel, waypoint | **no KSM** → intent-only placement |
 | environments | dev, prod (grouped) | one | one | one |
 
 ## 4. Cost and tiers
 
 Full matrix: 4 environments × 10 PRs, minus the once-only ones (P3, P7,
-P8) ≈ 31 live runs. At ~$1.5 per Opus run that is ~$45 per full
+P8), plus P11 and P12 on E1-dp ≈ 33 live runs. At ~$1.5 per Opus run that is ~$45 per full
 release run — a weekly event, not a per-commit one.
 
 | Tier | Runs | Model | Cost | When |
 |---|---|---|---|---|
 | Unit + replay | proxy, connectors, controller, identifiers, and replay of recorded sessions per environment; no model | none | $0 | every commit |
 | Smoke | E1 × {P2, P8} | Haiku | ~$0.05 | every prompt change |
-| Dev | E1 × all ten | Sonnet | ~$3 | before pushing a prompt or profile change |
+| Dev | E1 × all ten | Sonnet | ~$3 | before pushing a prompt change |
 | Cross-stack | {E2, E3, E4} × {P2, P4, P5, P6}, plus the stack-discovery check on each | Sonnet | ~$6 | when the specialists' prompts or the derivation guidance change |
 | Release | the full matrix | Opus | ~$45 | merge to main, weekly |
 
@@ -122,6 +126,10 @@ tables in §1 and §3 are its expected answers, never its inputs.
 1. **E1** first (closest to what exists), the three fixture repos with
    `deploy/istio-argo/`, `hack/env-up.sh e1`, traffic generator, session
    recording. P2, P4, P7, P8 as the first four PRs.
+   Then **E1-dp**: `meshd` (a minimal xDS server that hands stock Envoy
+   sidecars a static cluster list and an mTLS CA), `pra-stream`, P11 and
+   P12. This is the first test that discovery is per service, not per
+   fleet.
 2. **E4** second — it is the cheapest to build and the most instructive
    (unenforced policy, no mesh, no KSM).
 3. **E2**, then **E3**.
