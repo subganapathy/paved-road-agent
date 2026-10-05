@@ -28,15 +28,15 @@ type Config struct {
 
 // Fleet names the clusters identifiers may refer to and how metrics label them.
 type Fleet struct {
-	ClusterLabel string    `yaml:"cluster_label"` // e.g. "cluster"
-	Clusters     []Cluster `yaml:"clusters"`
+	ClusterLabel string    `yaml:"cluster_label" json:"cluster_label"` // e.g. "cluster"
+	Clusters     []Cluster `yaml:"clusters" json:"clusters"`
 }
 
 // Cluster is one cluster the fleet knows.
 type Cluster struct {
-	ID     string            `yaml:"id"`
-	Env    string            `yaml:"env"`
-	Labels map[string]string `yaml:"labels,omitempty"`
+	ID     string            `yaml:"id" json:"id"`
+	Env    string            `yaml:"env" json:"env"`
+	Labels map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 }
 
 // Slots binds each connector to a backend.
