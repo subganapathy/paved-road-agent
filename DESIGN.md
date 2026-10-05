@@ -874,8 +874,23 @@ pattern used here:
   Anthropic's cloud sandbox instead, with no pool at all — same proxy,
   same session.
 
-The sandbox-manager is the orchestrator for self-hosted sandboxes; it
-falls out of this design rather than being a second system.
+**What may be cached across sandboxes.** Fresh pods per session lose
+nothing that matters if the expensive, immutable artifacts live outside
+the pod: a bare git mirror per tenant (the proxy already clones to serve
+tarballs; it keeps the mirror, fetches deltas on PR events, serves
+`git archive`), and a per-tenant Go module proxy or read-only module
+cache (`GOPROXY` points at it; `GOSUMDB` stays on; a warmer job runs
+`go mod download` after merges). Both are read-only to sandboxes — only
+the warmer writes, with no model in the loop — per tenant, and hold only
+content the consumer verifies (`go.sum`, git SHAs, image digests), so a
+bad entry fails rather than lies. Discovery results, derivations and
+model outputs are never cached: they are run memory by design. This
+cache layer is one of the concrete reasons self-hosted sandboxes beat the
+cloud ones for a large Go codebase.
+
+The sandbox-manager — pool, mirror, module proxy, warmers, garbage
+collection — is the orchestrator for self-hosted sandboxes; it falls out
+of this design rather than being a second system.
 
 ## 11. Implementation design
 
