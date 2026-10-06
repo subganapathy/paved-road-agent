@@ -44,6 +44,11 @@ type Config struct {
 	LeadID        string // the deep tier
 	LeadVersion   int64
 	DevLeadID     string // the triage tier; empty disables triage and runs deep only
+	// InstantiatorID selects the staged shape: the strongest model writes
+	// the obligations, the dev lead executes them. It takes precedence
+	// over triage when set.
+	InstantiatorID      string
+	InstantiatorVersion int64
 	DevVersion    int64
 	EnvironmentID string
 	AnswerModel   string // the small model that turns a prose reply into the file; default claude-sonnet-5
@@ -241,9 +246,19 @@ func (c *Controller) review(ctx context.Context, repo string, number int, head s
 	var rep *findings.Report
 	var usage, sessionID string
 	if c.cfg.DevLeadID != "" {
-		triage := deep
-		triage.LeadID, triage.LeadVersion, triage.BudgetUSD = c.cfg.DevLeadID, c.cfg.DevVersion, c.cfg.BudgetUSD/3
-		out, err := session.Tiered{Triage: triage, Deep: deep}.Run(ctx, c.client, brief)
+		var out *session.Outcome
+		var err error
+		if c.cfg.InstantiatorID != "" {
+			inst := deep
+			inst.LeadID, inst.LeadVersion, inst.BudgetUSD = c.cfg.InstantiatorID, c.cfg.InstantiatorVersion, c.cfg.BudgetUSD/2
+			exec := deep
+			exec.LeadID, exec.LeadVersion = c.cfg.DevLeadID, c.cfg.DevVersion
+			out, err = session.Staged{Instantiate: inst, Execute: exec}.Run(ctx, c.client, brief)
+		} else {
+			triage := deep
+			triage.LeadID, triage.LeadVersion, triage.BudgetUSD = c.cfg.DevLeadID, c.cfg.DevVersion, c.cfg.BudgetUSD/3
+			out, err = session.Tiered{Triage: triage, Deep: deep}.Run(ctx, c.client, brief)
+		}
 		if out != nil && len(out.Sessions) > 0 {
 			sessionID = out.Sessions[len(out.Sessions)-1]
 			usage = strings.Join(out.Usage, " · ")

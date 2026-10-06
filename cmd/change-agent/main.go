@@ -812,9 +812,11 @@ func runServe(ctx context.Context, args []string) error {
 	if budget == 0 {
 		budget = 3
 	}
+	instantiator := lk.Agents[agents.InstantiatorKey]
 	ctl, err := controller.New(controller.Config{
 		Org: cfg.Slots.SCM.Org, Watch: a.Watch.Repos, WebhookSecret: secret, CommitFiles: a.Watch.CommitFiles, StateDir: a.Watch.StateDir,
-		BudgetUSD: budget, LeadID: lead.ID, LeadVersion: lead.Version, DevLeadID: devLead.ID, DevVersion: devLead.Version, EnvironmentID: a.Agent.EnvironmentID,
+		BudgetUSD: budget, LeadID: lead.ID, LeadVersion: lead.Version, DevLeadID: devLead.ID, DevVersion: devLead.Version,
+		InstantiatorID: instantiator.ID, InstantiatorVersion: instantiator.Version, EnvironmentID: a.Agent.EnvironmentID,
 	}, client, srv.SCM(), &github.Client{Token: ghTok, Base: cfg.Slots.SCM.API}, measureClient(a, cfg), log)
 	if err != nil {
 		return err
