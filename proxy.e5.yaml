@@ -4,7 +4,7 @@
 # Copy to proxy.yaml (gitignored) and fill in.
 
 listen: "127.0.0.1:8471"
-token: none
+token: keychain:paved-proxy-token        # the sandbox pod presents this; hack/sandbox/up.sh generates it
 
 fleet:
   cluster_label: cluster

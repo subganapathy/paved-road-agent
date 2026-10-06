@@ -1,0 +1,135 @@
+# The sandbox: one pod, two containers, one address.
+#
+#   worker  — claims a session's work item and serves its tool calls;
+#             holds the proxy token and nothing else.
+#   shell   — the model's bash; holds nothing, sees no other process,
+#             shares only /work with the worker.
+#
+# The NetworkPolicy leaves the pod one egress: the proxy, by IP and port.
+# No DNS, no cluster API, no internet, no metadata service. The worker
+# verifies all of that at start and refuses to run if any of it fails.
+# PROXY_IP is substituted by hack/sandbox/up.sh.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: paved-agent
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox
+  namespace: paved-agent
+automountServiceAccountToken: false
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-one-address
+  namespace: paved-agent
+spec:
+  podSelector:
+    matchLabels:
+      app: sandbox
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress:
+    - to:
+        - ipBlock:
+            cidr: PROXY_IP/32
+      ports:
+        - protocol: TCP
+          port: 8471
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox
+  namespace: paved-agent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sandbox
+  template:
+    metadata:
+      labels:
+        app: sandbox
+    spec:
+      serviceAccountName: sandbox
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      dnsPolicy: None
+      dnsConfig:
+        nameservers: ["127.0.0.1"]   # resolution is meant to fail
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 65534
+      volumes:
+        - name: work
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: worker-tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: shell-tmp
+          emptyDir:
+            sizeLimit: 256Mi
+      containers:
+        - name: worker
+          image: paved-agent/worker:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - worker
+            - --confined
+            - --proxy=http://PROXY_IP:8471
+            - --shell=http://127.0.0.1:9471
+            - --environment=$(ENVIRONMENT_ID)
+            - --workdir=/work
+          env:
+            - name: ENVIRONMENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: sandbox
+                  key: environment_id
+            - name: PRA_PROXY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sandbox
+                  key: proxy_token
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: work, mountPath: /work}
+            - {name: worker-tmp, mountPath: /tmp}
+        - name: shell
+          image: paved-agent/shell:dev
+          imagePullPolicy: IfNotPresent
+          args: [--listen=127.0.0.1:9471, --workdir=/work]
+          securityContext:
+            runAsUser: 65533
+            runAsGroup: 65533
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          volumeMounts:
+            - {name: work, mountPath: /work}
+            - {name: shell-tmp, mountPath: /tmp}

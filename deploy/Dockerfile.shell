@@ -1,0 +1,17 @@
+# The shell: the model's bash. It holds no credential and is given none;
+# the pod decides what it can reach. Tools a reviewer reaches for while
+# reading a repository, and nothing that talks to the network.
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/shell-sidecar ./cmd/shell-sidecar
+
+FROM alpine:3.21
+RUN apk add --no-cache bash coreutils findutils grep sed gawk jq diffutils file tree \
+ && adduser -D -u 65533 -h /work shell \
+ && rm -f /usr/bin/wget /usr/bin/nc /sbin/apk /usr/bin/ssh 2>/dev/null; true
+COPY --from=build /out/shell-sidecar /usr/local/bin/shell-sidecar
+USER 65533:65533
+ENTRYPOINT ["/usr/local/bin/shell-sidecar"]

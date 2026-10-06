@@ -2,6 +2,7 @@ package agents
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/subganapathy/paved-road-agent/internal/connectors"
@@ -59,7 +60,7 @@ func TestParamsWire(t *testing.T) {
 	for _, c := range set["configs"].([]any) {
 		enabled = append(enabled, c.(map[string]any)["name"].(string))
 	}
-	if len(enabled) != 3 {
+	if strings.Join(enabled, ",") != "bash,read,glob,grep" {
 		t.Errorf("built-ins = %v", enabled)
 	}
 	if len(tools)-1 != len(lead.Connectors) {

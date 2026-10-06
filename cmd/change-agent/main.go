@@ -260,6 +260,9 @@ func runProxy(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := mountAgentAPI(srv, *cfgPath); err != nil {
+		return err
+	}
 	hs := &http.Server{Addr: cfg.Listen, Handler: srv, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -272,6 +275,23 @@ func runProxy(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// mountAgentAPI gives the proxy the platform credential the sandbox
+// worker no longer holds, when the configuration has one.
+func mountAgentAPI(srv *proxy.Server, cfgPath string) error {
+	a, err := loadAgentConfig(cfgPath)
+	if err != nil {
+		return err
+	}
+	if a.Agent.EnvironmentID == "" || a.Agent.EnvironmentKey == "" {
+		return nil
+	}
+	key, err := proxy.Credential(a.Agent.EnvironmentKey)
+	if err != nil {
+		return fmt.Errorf("agent.environment_key: %w", err)
+	}
+	return srv.MountAgentAPI(proxy.AgentAPI{EnvironmentID: a.Agent.EnvironmentID, EnvironmentKey: key})
 }
 
 // ---- worker ---------------------------------------------------------------
@@ -306,9 +326,39 @@ func workerOptions(a agentConfig, cfg *proxy.Config, once bool) (sandbox.Options
 
 func runWorker(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("worker", flag.ExitOnError)
-	cfgPath := fs.String("config", "proxy.yaml", "configuration file")
+	cfgPath := fs.String("config", "proxy.yaml", "configuration file (laptop mode)")
 	once := fs.Bool("once", false, "claim one session, serve it, exit")
+	confined := fs.Bool("confined", false, "assert this process runs in the sandbox pod; verified at start, and the only mode that serves a shell")
+	shellURL := fs.String("shell", "", "the shell sidecar, e.g. http://127.0.0.1:9471 (confined only)")
+	proxyBase := fs.String("proxy", "", "pod mode: the proxy's base URL; the platform is reached through it and no configuration file is read. The proxy token comes from $PRA_PROXY_TOKEN")
+	envID := fs.String("environment", "", "pod mode: the self-hosted environment id")
+	workdir := fs.String("workdir", "", "pod mode: the working directory shared with the shell container")
 	fs.Parse(args)
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if *proxyBase != "" {
+		// Pod mode. The sandbox holds the proxy token and nothing else;
+		// the platform credential is the proxy's to add.
+		tok := os.Getenv("PRA_PROXY_TOKEN")
+		if *envID == "" || *workdir == "" {
+			return errors.New("pod mode needs --environment and --workdir")
+		}
+		client := anthropic.NewClient(
+			option.WithBaseURL(strings.TrimSuffix(*proxyBase, "/")+proxy.AgentAPIPrefix+"/"),
+			option.WithHeader("X-Proxy-Token", tok),
+		)
+		return sandbox.Run(ctx, client, sandbox.Options{
+			EnvironmentID:  *envID,
+			EnvironmentKey: proxy.Placeholder,
+			Workdir:        *workdir,
+			ProxyBase:      *proxyBase,
+			ProxyToken:     tok,
+			Once:           *once,
+			Shell:          *shellURL,
+			Confined:       *confined,
+			Logger:         log,
+		})
+	}
 	a, err := loadAgentConfig(*cfgPath)
 	if err != nil {
 		return err
@@ -325,6 +375,7 @@ func runWorker(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	o.Confined, o.Shell = *confined, *shellURL
 	return sandbox.Run(ctx, client, o)
 }
 
@@ -695,6 +746,9 @@ func runServe(ctx context.Context, args []string) error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	srv, err := proxy.New(cfg, log)
 	if err != nil {
+		return err
+	}
+	if err := mountAgentAPI(srv, *cfgPath); err != nil {
 		return err
 	}
 	ghTok, err := proxy.Credential(cfg.Slots.SCM.Auth)

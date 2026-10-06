@@ -75,7 +75,7 @@ func (c *Client) call(ctx context.Context, method, path string, in any) (string,
 type (
 	emptyIn       struct{}
 	labelValuesIn struct {
-		Label string   `json:"label" jsonschema:"required" jsonschema_description:"The label whose values to list. Use __name__ to list every metric family the fleet exports: that is how you learn what is there before forming queries."`
+		Label    string   `json:"label" jsonschema:"required" jsonschema_description:"The label whose values to list. Use __name__ to list every metric family the fleet exports: that is how you learn what is there before forming queries."`
 		Match    []string `json:"match,omitempty" jsonschema_description:"Optional series selectors to narrow the listing, e.g. {namespace=\"hello\"}"`
 		Contains string   `json:"contains,omitempty" jsonschema_description:"Keep only values containing this substring. A long __name__ listing comes back grouped by family prefix; use contains=<prefix> to see one family's names."`
 	}
@@ -412,7 +412,7 @@ func untar(r io.Reader, dest string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777|0o400)
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777|0o444)
 			if err != nil {
 				return err
 			}

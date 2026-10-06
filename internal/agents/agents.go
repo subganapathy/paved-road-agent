@@ -40,12 +40,15 @@ const (
 	SpecialistModel = "claude-sonnet-5"
 )
 
-// sandboxTools are the built-ins the agents get. Bash stays off until the
-// worker runs inside the kind pod with the NetworkPolicy: on a laptop the
-// "sandbox" is the operator's machine, and a review was observed running
-// docker containers on it to time a command. Read-only tools cannot do
-// that. Bash returns with the pod (deploy/), where it is harmless.
-var sandboxTools = []string{"read", "glob", "grep"}
+// sandboxTools are the built-ins the agents get. Bash is one of them,
+// and what bash can reach is the sandbox pod's decision, not this
+// file's: in the pod the shell runs in its own container with no
+// credentials and a network that reaches only the proxy (deploy/). A
+// worker outside the pod serves a bash that refuses every call and says
+// so — a review was once observed running docker on the operator's
+// laptop to time a command, which is exactly what the pod makes
+// impossible.
+var sandboxTools = []string{"bash", "read", "glob", "grep"}
 
 // Specialists are the roster, in the order the report lists their facts.
 var Specialists = []Def{

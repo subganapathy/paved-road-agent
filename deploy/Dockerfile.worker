@@ -1,0 +1,13 @@
+# The worker: claims work, serves tool calls, forwards bash to the shell
+# container. Static binary on a distroless base; no shell of its own.
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/change-agent ./cmd/change-agent
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/change-agent /change-agent
+USER 65532:65532
+ENTRYPOINT ["/change-agent"]

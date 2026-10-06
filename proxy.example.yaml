@@ -4,7 +4,7 @@
 # Copy to proxy.yaml (gitignored) and fill in.
 
 listen: "127.0.0.1:8471"              # an explicit address; ":8080" can land on IPv6 only when another process holds IPv4
-token: keychain:paved-agent-proxy        # the bearer the sandbox presents to the proxy
+token: keychain:paved-proxy-token        # the bearer the sandbox pod presents; hack/sandbox/up.sh generates it into the Keychain
 
 fleet:
   cluster_label: cluster                 # the metric label that names a cluster

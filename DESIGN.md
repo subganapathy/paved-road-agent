@@ -884,47 +884,75 @@ stream exactly once — that is how a model at Anthropic reaches tools in
 our environment at all — and there is one worker per session, not two.
 
 ```
-  Anthropic                        our cluster (kind in M2)
-  ┌──────────────┐                 ┌─────────────────────┐  HTTP  ┌──────────────────────┐
-  │ Managed      │  tool_use  ───▶ │ sandbox pod         │ ─────▶ │ proxy pod            │
-  │ Agents:      │                 │  worker             │        │  policy, audit       │
-  │ lead +       │ ◀─── result     │  repos in /work     │ ◀───── │  credentials (WIF)   │
-  │ specialists  │                 │  read/grep/bash     │        │  connectors          │
-  └──────────────┘                 │  connector clients  │        │  controller          │
-                                   └─────────────────────┘        └──────┬───────────────┘
-                                   egress: Anthropic API, proxy          │ read-only, plus
-                                   — nothing else (NetworkPolicy)        ▼ 3 writes to the PR
-                                                            metrics · logs · alerts · cloud · GitHub
+  Anthropic                     the sandbox cluster (kind, Calico)         the laptop
+  ┌──────────────┐              ┌──────────────────────────────────┐        ┌──────────────────────┐
+  │ Managed      │  tool_use ─▶ │ sandbox pod                      │  HTTP  │ proxy                │
+  │ Agents:      │   (via the   │  ┌─────────────┐ ┌─────────────┐ │ ─────▶ │  policy, audit       │
+  │ lead +       │    proxy)    │  │ worker      │ │ shell       │ │        │  credentials         │
+  │ specialists  │ ◀─ result    │  │ proxy token │ │ nothing     │ │ ◀───── │  connectors          │
+  └──────────────┘              │  │ read/grep   │ │ bash        │ │        │  agent API forward   │
+                                │  └──────┬──────┘ └──────┬──────┘ │        │  controller          │
+                                │     /work shared, loopback only  │        └──────┬───────────────┘
+                                └──────────────────────────────────┘               │ read-only, plus
+                                egress: the proxy's IP and port — nothing else     ▼ 3 writes to the PR
+                                                                     metrics · logs · cloud · GitHub · Anthropic
 ```
+
+What changed from the first drawing: the sandbox no longer talks to
+Anthropic directly. The worker's own platform calls — claim a work item,
+heartbeat the lease, serve the session's stream — go through the proxy
+too, which forwards an allowlisted set of paths and swaps a placeholder
+for the environment key. The sandbox therefore holds **one** credential,
+the proxy token, and has **one** network peer. And the shell is a second
+container: it holds no token at all, shares no process namespace with the
+worker, and shares only the working directory the repositories are
+unpacked into.
 
 ### 10.2 Boundaries
 
-- **The sandbox holds no credential of any kind.** Repositories arrive as
-  tarballs the proxy serves after cloning with its own token. No
-  service-account token is mounted. If the model used bash to call the
-  proxy directly instead of through a tool, it would get exactly what the
-  tool gives it: policy lives in the proxy, not in the caller.
+- **The shell holds nothing; the worker holds the proxy token; the proxy
+  holds everything else.** This is the order the E5 review taught: a
+  prompt is not a boundary. With bash on the operator's laptop the
+  executor found Docker on the PATH and ran containers to time a
+  command — clever, correct, and precisely what the sandbox exists to
+  make impossible. In the pod, the same model has a real persistent
+  shell and the shell's world is `/work`, loopback, and a proxy that
+  returns 401 to it.
+- **The worker verifies its confinement before claiming work** — not
+  root, no container-runtime socket, read-only system, no service
+  account token, no route to the internet, to DNS, to the cluster API or
+  the metadata service, and a route to the proxy — and refuses to start
+  otherwise. A `NetworkPolicy` that nobody enforces (kind's default CNI
+  does not) is a comment; the check turns it back into a fact, and
+  `hack/sandbox/verify.sh` proves the same from inside the shell.
+- **Repositories arrive as tarballs** the proxy serves after cloning
+  with its own token. If the model used bash to call the proxy directly
+  instead of through a tool, it would get exactly what the tool gives
+  it: policy lives in the proxy, not in the caller.
 - **The proxy enforces policy on every call**: read-only operations,
-  bounded ranges and result sizes, metric and label allowlists where the
-  org wants them, per-session call and cost limits, an audit line per
-  call. It owns the single write path: `propose` checks the path is under
-  `.paved-agent/` and the ref is the PR's head; `comment` and `check` are
-  the other two writes. Branch protection still requires a human to
-  merge. The controller — which reacts to PR events, clones, creates
-  sessions, posts check states and collects reports — runs in the same
-  pod.
+  bounded ranges and result sizes, per-session call and cost limits, an
+  audit line per call. It owns the single write path: `propose` checks
+  the path is under `.paved-agent/` and the ref is the PR's head;
+  `comment` and `check` are the other two writes. Branch protection
+  still requires a human to merge. The agent-API forward is the one slot
+  facing the platform: the worker's nine paths, nothing that creates a
+  session, lists others, manages agents or downloads anything.
 - **The PR under review is untrusted input.** Any PR can contain text
   aimed at the agent. The worst a fully subverted agent can do is read
-  what the org granted the proxy and propose a file change on the very PR
-  it is reviewing, which a human then reads. Wide in reach, narrow in
-  power. The proxy is the only component worth hardening, and it is
-  small: five adapters and a policy layer.
-- **Credentials are short-lived.** The proxy pod's service account is
-  federated to read-only cloud roles and metric/log readers at call time.
-  No long-lived keys; nothing in any repository.
-- **Why kind and not Docker alone.** The same manifests (two Deployments,
-  a NetworkPolicy, a Service) are the production deployment on a
-  customer's cluster; kind is that deployment on the laptop.
+  what the org granted the proxy, propose a file change on the very PR
+  it is reviewing, and — because the worker and the shell share a pod —
+  claim another work item from the same environment through the proxy's
+  forward. The last is the residual of the single-tenant design; the
+  sandbox pool (§10.4) separates the worker from the executor and
+  removes it.
+- **Credentials are short-lived where the backend allows.** On a
+  customer's cluster the proxy's service account is federated to
+  read-only cloud roles and metric readers at call time. On the laptop
+  the Keychain is the vault; nothing is ever a value in a file.
+- **Why kind and not Docker alone.** The same manifests (`deploy/`) are
+  the production deployment on a customer's cluster; kind is that
+  deployment on the laptop — with Calico, because the policy must be
+  enforced to mean anything.
 
 ### 10.3 Path to a hosted service (future project)
 

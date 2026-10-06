@@ -1,0 +1,15 @@
+# A cluster whose CNI enforces NetworkPolicy. kind's default (kindnet)
+# does not, and a policy nobody enforces is a comment. Calico is
+# installed by hack/sandbox/up.sh after the cluster is created.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: pra-sandbox
+networking:
+  disableDefaultCNI: true
+  # Not Calico's default 192.168.0.0/16: that range contains Docker
+  # Desktop's host gateway (192.168.65.254), so Calico would treat the
+  # proxy's address as a pod and never NAT to it. Calico takes the pool
+  # from kubeadm's cluster CIDR when CALICO_IPV4POOL_CIDR is unset.
+  podSubnet: 10.244.0.0/16
+nodes:
+  - role: control-plane
