@@ -49,9 +49,9 @@ type Config struct {
 	// over triage when set.
 	InstantiatorID      string
 	InstantiatorVersion int64
-	DevVersion    int64
-	EnvironmentID string
-	AnswerModel   string // the small model that turns a prose reply into the file; default claude-sonnet-5
+	DevVersion          int64
+	EnvironmentID       string
+	AnswerModel         string // the small model that turns a prose reply into the file; default claude-sonnet-5
 }
 
 // marker identifies the controller's own comments, so polling never treats
