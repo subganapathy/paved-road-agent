@@ -26,22 +26,32 @@ func (s Staged) Run(ctx context.Context, client anthropic.Client, brief string) 
 		return nil, fmt.Errorf("create instantiation session: %w", err)
 	}
 	out.Sessions = append(out.Sessions, first.ID)
-	final, err := Wait(ctx, client, first.ID, 5e9)
-	if final != nil {
-		out.Usage = append(out.Usage, usageLine("instantiate", final))
-	}
-	if err != nil {
-		return out, err
-	}
-	text, err := LastLeadMessage(ctx, client, first.ID)
-	if err != nil {
-		return out, err
-	}
-	in, err := findings.ParseInstantiation(text)
-	if err != nil {
+	var in *findings.Instantiation
+	var final *anthropic.BetaManagedAgentsSession
+	for try := 0; ; try++ {
+		var text string
+		final, err = Wait(ctx, client, first.ID, 5e9)
+		if err != nil {
+			return out, err
+		}
+		text, err = LastLeadMessage(ctx, client, first.ID)
+		if err != nil {
+			return out, err
+		}
+		in, err = findings.ParseInstantiation(text)
+		if err == nil {
+			break
+		}
 		out.LastText = text
-		return out, fmt.Errorf("instantiation: %w", err)
+		if try >= MaxNudges || final.Status == anthropic.BetaManagedAgentsSessionStatusTerminated {
+			out.Usage = append(out.Usage, usageLine("instantiate", final))
+			return out, fmt.Errorf("instantiation: %w", err)
+		}
+		if nerr := Nudge(ctx, client, first.ID, "Continue. Your turn ended without the instantiation. Do not narrate what you will do next: either call a tool or finish with the instantiation JSON in one fenced block marked json."); nerr != nil {
+			return out, nerr
+		}
 	}
+	out.Usage = append(out.Usage, usageLine("instantiate", final))
 
 	execBrief := brief + "\n\n# Instantiation, written by the senior reviewer — adopt it\n\n" + in.Render() +
 		"\nEstablish each obligation with the evidence it names; grade from what you establish; finish with the report JSON."
@@ -50,7 +60,7 @@ func (s Staged) Run(ctx context.Context, client anthropic.Client, brief string) 
 		return out, fmt.Errorf("create execution session: %w", err)
 	}
 	out.Sessions = append(out.Sessions, second.ID)
-	rep, final, text, err := Collect(ctx, client, second.ID)
+	rep, final, text, err := CollectReport(ctx, client, second.ID)
 	if final != nil {
 		out.Usage = append(out.Usage, usageLine("execute", final))
 	}

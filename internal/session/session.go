@@ -258,3 +258,41 @@ func short(sha string) string {
 func indent(s string) string {
 	return "  " + strings.ReplaceAll(strings.TrimRight(s, "\n"), "\n", "\n  ")
 }
+
+// Nudge sends a user message to an idle session: the model sometimes ends
+// a turn with narration ("Let me check…") instead of a tool call or the
+// final JSON, and the platform treats that as the end of its turn. A
+// nudge resumes it; the worker claims the resumed session as new work.
+func Nudge(ctx context.Context, client anthropic.Client, id, text string) error {
+	_, err := client.Beta.Sessions.Events.Send(ctx, id, anthropic.BetaSessionEventSendParams{
+		Events: []anthropic.BetaManagedAgentsEventParamsUnion{{OfUserMessage: &anthropic.BetaManagedAgentsUserMessageEventParams{
+			Type:    anthropic.BetaManagedAgentsUserMessageEventParamsTypeUserMessage,
+			Content: []anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{{OfText: &anthropic.BetaManagedAgentsTextBlockParam{Type: anthropic.BetaManagedAgentsTextBlockTypeText, Text: text}}},
+		}}},
+	})
+	return err
+}
+
+// MaxNudges bounds how many times a stage is resumed after ending
+// without its expected output.
+const MaxNudges = 2
+
+// CollectReport waits for the lead and parses its report, nudging the
+// session on when it ends without one.
+func CollectReport(ctx context.Context, client anthropic.Client, id string) (*findings.Report, *anthropic.BetaManagedAgentsSession, string, error) {
+	var last *anthropic.BetaManagedAgentsSession
+	var text string
+	for try := 0; ; try++ {
+		rep, s, t, err := Collect(ctx, client, id)
+		last, text = s, t
+		if err == nil {
+			return rep, s, t, nil
+		}
+		if try >= MaxNudges || t == "" || (s != nil && s.Status == anthropic.BetaManagedAgentsSessionStatusTerminated) {
+			return nil, last, text, err
+		}
+		if nerr := Nudge(ctx, client, id, "Continue. Your turn ended without the report. Finish the review and end with the report JSON in one fenced block marked json."); nerr != nil {
+			return nil, last, text, nerr
+		}
+	}
+}

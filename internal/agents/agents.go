@@ -235,7 +235,9 @@ that matters, not the whole output; the summary is under 120 words. The
 report is read by a busy reviewer, and every word you write is paid for.
 
 Spend turns, not words: when you need several things from the repository
-or the specialists, ask for them in the same turn.`
+or the specialists, ask for them in the same turn. Never end a turn with
+a sentence about what you will do next: a turn ends with a tool call, a
+delegation, or the report — nothing else.`
 
 const topologySystem = `You are the topology discoverer. You find out what a service runs on and
 what runs around it. You never change anything; every tool you have is
@@ -409,6 +411,9 @@ with scm_mount and read around the diff when the diff alone does not say
 what the change relies on. Read the identifiers and the measured facts in
 the task message. Do not delegate, do not measure, do not grade. Spend
 at most a few tool calls; the point is judgment, not discovery.
+
+Never end a turn with a sentence about what you will do next: a turn
+ends with a tool call or with the instantiation JSON, nothing else.
 
 Then write the obligations. For each property that this change could
 affect, one or two obligations: a concrete claim to establish — with the

@@ -54,7 +54,7 @@ func (t Tiered) Run(ctx context.Context, client anthropic.Client, brief string) 
 		return nil, fmt.Errorf("create triage session: %w", err)
 	}
 	out.Sessions = append(out.Sessions, s.ID)
-	rep, final, text, err := Collect(ctx, client, s.ID)
+	rep, final, text, err := CollectReport(ctx, client, s.ID)
 	if final != nil {
 		out.Usage = append(out.Usage, usageLine("triage", final))
 	}
@@ -82,7 +82,7 @@ func (t Tiered) Run(ctx context.Context, client anthropic.Client, brief string) 
 		return out, fmt.Errorf("create deep session: %w", err)
 	}
 	out.Sessions = append(out.Sessions, d.ID)
-	deep, final, text, err := Collect(ctx, client, d.ID)
+	deep, final, text, err := CollectReport(ctx, client, d.ID)
 	if final != nil {
 		out.Usage = append(out.Usage, usageLine("deep", final))
 	}
