@@ -1,0 +1,59 @@
+# The appliance: stock Envoy on the network between the clusters. It is
+# the only thing on the path that is not Kubernetes. Its limits are here —
+# a 20 rps token bucket and three retries toward the server — and its
+# stats are on :9901 for Prometheus. This file is the declaration a review
+# must find; the stats are the measurement.
+admin:
+  address: { socket_address: { address: 0.0.0.0, port_value: 9901 } }
+static_resources:
+  listeners:
+    - name: grpc_ingress
+      address: { socket_address: { address: 0.0.0.0, port_value: 8443 } }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: grpc_ingress
+                codec_type: AUTO
+                http_filters:
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: appliance_ratelimit
+                      token_bucket: { max_tokens: 20, tokens_per_fill: 20, fill_interval: 1s }
+                      filter_enabled: { default_value: { numerator: 100 }, runtime_key: ratelimit_enabled }
+                      filter_enforced: { default_value: { numerator: 100 }, runtime_key: ratelimit_enforced }
+                      status: { code: TooManyRequests }
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: to_hello
+                  virtual_hosts:
+                    - name: hello
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: hello_server_cluster
+                            timeout: 5s
+                            retry_policy:
+                              retry_on: "unavailable,connect-failure,refused-stream"
+                              num_retries: 3
+  clusters:
+    - name: hello_server_cluster
+      type: STATIC
+      connect_timeout: 2s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config: { http2_protocol_options: {} }
+      circuit_breakers:
+        thresholds:
+          - { priority: DEFAULT, max_connections: 64, max_requests: 200, max_pending_requests: 100, max_retries: 10 }
+      load_assignment:
+        cluster_name: hello_server_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint: { address: { socket_address: { address: 172.18.0.8, port_value: 30051 } } }  # e5-server node, hello NodePort

@@ -1,0 +1,53 @@
+# The client cluster's workload: calls the server by its name at a steady
+# ~5 rps. The name is not a Service in this cluster — it is the entrance
+# to a path that leaves it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: client
+  labels: {pod-security.kubernetes.io/enforce: restricted}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: client, namespace: client}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: client-config, namespace: client}
+data:
+  SERVER_ADDR: "api.e5.internal:8443"
+  CALL_INTERVAL: "0.2"              # seconds between calls: 5 rps
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: client
+  labels: {app: client}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: client}}
+  template:
+    metadata:
+      labels: {app: client}
+    spec:
+      serviceAccountName: client
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: client
+          image: fullstorydev/grpcurl:v1.9.3-alpine
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                grpcurl -plaintext -max-time 3 -import-path /proto -proto hello.proto -d '{"name":"client"}' "$SERVER_ADDR" hello.v1.HelloService/Hello >/dev/null 2>&1
+                sleep "$CALL_INTERVAL"
+              done
+          envFrom: [{configMapRef: {name: client-config}}]
+          resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {cpu: 200m, memory: 64Mi}}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: proto, mountPath: /proto, readOnly: true}]
+      volumes:
+        - name: proto
+          configMap: {name: hello-proto}
