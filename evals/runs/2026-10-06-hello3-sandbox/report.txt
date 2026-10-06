@@ -1,0 +1,59 @@
+verdict: BLOCKING
+Business logic and tests are sound, and the change is low-risk today (no prod cluster exists, frontend has no real call site — only a synthetic traffic generator of unknown payload). But it ships with no safety net: the canary AnalysisTemplate's error-ratio query excludes InvalidArgument, and e2e's `reach`/`no-errors` matchers don't treat InvalidArgument as failure either — so a canary or a real caller failing 100% of Hello calls would pass CI and promote undetected, and nothing alerts on it. Fix the analysis query/e2e before trusting the paved road to catch this class of change.
+
+worst case: Hello is the service's only RPC. After this change every request whose `name` is empty or whitespace — previously answered OK with "hello " — is refused with gRPC InvalidArgument (code 3). If the one deployed caller (workload `traffic` in namespace frontend, principal spiffe://cluster.local/ns/frontend/sa/frontend, cluster e1-dev, 3.2 rps, 100% success today per the rps query) ever sends a default/blank name, 100% of its calls to hello fail, permanently and immediately, with no retry recovery (the mesh retries only UNAVAILABLE). Two amplifiers make it worse than a one-line validation sounds: (a) the canary AnalysisTemplate `server-errors` (deploy/base/rollout.yaml) counts only code=~"Unknown|Internal|DataLoss|DeadlineExceeded", so a revision rejecting every request would pass analysis and promote to 100%; (b) the metrics stack has no alerting rules (discover.yaml metrics.is; ALERTS query empty) and Istio reports gRPC errors as HTTP response_code=200, so the failure is invisible on the mesh-level signals. Containment: internal only (both Services are ClusterIP), one authorized caller, one ready replica in e1-dev, ceiling 2; no persisted state. Blast radius is therefore one internal request path on one service in one dev cluster unless a prod cluster also runs it. (reduced proof)
+
+stack:
+  mesh:       Istio 1.31.1 sidecar mesh, strict mTLS
+  deploy:     Argo CD GitOps + Argo Rollouts canary (10%/5m -> 50%/5m) with AnalysisTemplate server-errors
+  admission:  PSS restricted, no general policy engine
+  enforcer:   NetworkPolicy default-deny + allow-list
+  autoscaler: KEDA on in-flight RPCs, HPA ceiling 2
+  metrics:    prometheus scraping vikrant_* + kube-state + envoy, no alerting rules
+
+properties:
+  correct                  warning  No deployed application code calls Hello with a real payload today (frontend has zero Go references to hello's client — org-finder confirmed); the only live caller is a synthetic 'traffic' load-generator of unknown script, and the proto/README contract is left saying Hello always answers.
+  reversible               info     Stateless, additive-only change; no stored format, migration, or caller pinned to the old blank-name answer; mesh does not retry InvalidArgument so mixed canary/stable versions diverge safely.
+  within_budget            info     No new call, no fan-out, rejection returns before any work; current load (3.2 rps, 0 inflight, ceiling 2) is unaffected either way.
+  stable_under_failure     info     InvalidArgument is outside the mesh's retryOn list and the canonical client sets no retry policy, so the new error cannot be amplified; no caller exists yet to loop on it.
+  progressively_delivered  warning  The canary pipeline exists and is used, but its AnalysisTemplate query excludes InvalidArgument from the error ratio, so a canary that fails 100% of Hello calls this way would still pass analysis and promote.
+  available                info     No manifest, probe, resource or lifecycle field touched; PDB, spread, probes and limits are unaffected.
+  secure                   info     No new permission or identity; the rejection message is a fixed string and does not log or echo the caller-supplied name.
+  observable               warning  vikrant_rpcs_handled_total{code="InvalidArgument"} would record the new failure and the discover.yaml errors query would show it, but there are no alerting rules, Istio reports it as response_code=200 so the rps dashboard is blind, and there is no flag to turn the validation off without a redeploy.
+  proven                   blocking The platform's own e2e checks (`reach`, `no-errors`) and the canary AnalysisTemplate are all structurally blind to this exact regression: none of their matchers treat InvalidArgument as a failure, so CI and canary promotion would pass even if every real call to Hello started failing this way.
+
+[blocking] proven (confidence 0.85)
+  e2e/run.sh's `reach` matcher (`CODE* && !~ PermissionDenied|Unavailable|DeadlineExceeded`) and `no-errors` matcher (failure list `Unavailable,DeadlineExceeded,Internal,Unknown,Canceled`) both still match an output of 'CODE InvalidArgument' / 'LOOP ... failed=0 codes=InvalidArgument:N', so the frontend-reachability and node-drain checks pass whether Hello answers OK or rejects every call.
+  evidence (config): e2e/run.sh lines 225-233 (matches()), 339 (check reach), 359 (check no-errors) = reach excludes only PermissionDenied|Unavailable|DeadlineExceeded; no-errors counts failed only from the probe's `failure` list
+  evidence (config): e2e/probe/main.go line 89 = var failure = []codes.Code{Unavailable, DeadlineExceeded, Internal, Unknown, Canceled} — InvalidArgument absent
+  recommend: Either add a probe mode that asserts response content/success for Hello specifically, or treat this gap as a platform-level blind spot to fix before relying on e2e/canary signals for business-logic error changes; until then this PR ships without any automated proof that the new rejection path behaves as intended end-to-end.
+
+[warning] progressively_delivered (confidence 0.90)
+  AnalysisTemplate server-errors' query matches only code=~"Unknown|Internal|DataLoss|DeadlineExceeded"; a canary where 100% of Hello calls return InvalidArgument yields numerator 0 over any denominator, successCondition `result<=0.01` holds, and the canary promotes at step 1/10%.
+  evidence (config): deploy/base/rollout.yaml AnalysisTemplate server-errors spec.metrics[0] = query excludes InvalidArgument; successCondition passes on ratio 0
+  recommend: Note for the platform/service owner that the canary gate does not catch application-level rejections (4xx-class gRPC codes); acceptable here only because current worst case is bounded (dev-only, no production cluster in the fleet, no confirmed real caller).
+
+[warning] correct (confidence 0.60)
+  frontend, the only authorized caller, has no Go call site constructing hellov1.HelloRequest at all (org-finder: no dependency on hello's client module in go.mod/go.sum, no reference in frontend's handler/main code); the single measured live caller is workload `traffic` in namespace frontend (0.52 req/s over 1h, 100% response_code=200), a synthetic load generator reusing frontend's identity per discover.yaml's answer, whose request payload is not found in either repository.
+  evidence (doc): org-finder report on smallStepGiantLeap/frontend grep -rni hello across repo = hello appears only in service.yaml egress, NetworkPolicy, and a payload-free e2e reachability probe — no Go call site
+  evidence (metric): discover.yaml measure.callers sum by (cluster, source_workload, source_principal) (rate(istio_requests_total{...}[1h])) = {source_workload=traffic, source_principal=.../ns/frontend/sa/frontend} 0.526
+  evidence (answer): .paved-agent/discover.yaml answers traffic_holds_frontend_identity = yes — traffic load generator intentionally runs as sa frontend
+  recommend: Confirm with a human whether the `traffic` generator ever sends a blank/whitespace name; if it is a fixed non-blank payload this finding is informational, if it can be blank the change breaks the only live caller today.
+
+[warning] observable (confidence 0.80)
+  A 100%-InvalidArgument regression would be silent to anyone watching mesh-level dashboards or alerts: the metrics stack has no alerting rules (ALERTS{alertstate="firing",namespace="hello"} returned no data) and Istio records gRPC application errors with response_code=200 (measured rps query shows response_code=200 only), so only an operator querying vikrant_rpcs_handled_total{code="InvalidArgument"} directly would see it; there is no flag to disable the validation without a redeploy (cmd/hello/main.go only exposes -drain-delay/-drain-spread/-shutdown-timeout).
+  evidence (metric): measured ALERTS query ALERTS{alertstate="firing",namespace="hello"} = no data
+  evidence (metric): measured rps query sum by (cluster, source_workload, response_code) (rate(istio_requests_total{...}[5m])) = response_code=200 only (HTTP-level, masks gRPC status)
+  evidence (code): cmd/hello/main.go flag definitions = no feature flag gates the validation
+  recommend: Add an alert rule on vikrant_rpcs_handled_total{code!="OK"} rate for this service, since the metrics stack has none for any service yet.
+
+unknown: Whether the synthetic traffic generator (workload `traffic`, sa frontend, the only live caller of Hello) ever sends an empty or whitespace-only name (blocks correct, stable_under_failure); tried: grepped hello repo for 'traffic' — only Istio trafficPolicy/trafficRouting matches, no generator source; delegated to org-finder against smallStepGiantLeap/frontend — confirmed no Go call site to hello exists there either, so the generator is not frontend's own application code and its source is outside both reviewed repositories
+
+QUESTION q1 (blocks correct):
+  Does the `traffic` load-generator workload (namespace frontend, sa frontend) that currently calls hello.v1.HelloService/Hello ever send an empty or whitespace-only name?
+  if yes → write to .paved-agent/discover.yaml:
+    answers:
+      - {question: traffic_sends_blank_name, answer: "yes", detail: "the traffic load generator in namespace frontend can send an empty/whitespace name to hello.v1.HelloService/Hello"}
+  if no → write to .paved-agent/discover.yaml:
+    answers:
+      - {question: traffic_sends_blank_name, answer: "no", detail: "the traffic load generator in namespace frontend always sends a non-blank name to hello.v1.HelloService/Hello"}

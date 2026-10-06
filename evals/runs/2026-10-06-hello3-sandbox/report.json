@@ -1,0 +1,314 @@
+{
+  "change": "smallStepGiantLeap/hello#3@46ff747036ea2d059d4bf0f89b30034033d894f5",
+  "instantiation": {
+    "worst_case": "Hello is the service's only RPC. After this change every request whose `name` is empty or whitespace — previously answered OK with \"hello \" — is refused with gRPC InvalidArgument (code 3). If the one deployed caller (workload `traffic` in namespace frontend, principal spiffe://cluster.local/ns/frontend/sa/frontend, cluster e1-dev, 3.2 rps, 100% success today per the rps query) ever sends a default/blank name, 100% of its calls to hello fail, permanently and immediately, with no retry recovery (the mesh retries only UNAVAILABLE). Two amplifiers make it worse than a one-line validation sounds: (a) the canary AnalysisTemplate `server-errors` (deploy/base/rollout.yaml) counts only code=~\"Unknown|Internal|DataLoss|DeadlineExceeded\", so a revision rejecting every request would pass analysis and promote to 100%; (b) the metrics stack has no alerting rules (discover.yaml metrics.is; ALERTS query empty) and Istio reports gRPC errors as HTTP response_code=200, so the failure is invisible on the mesh-level signals. Containment: internal only (both Services are ClusterIP), one authorized caller, one ready replica in e1-dev, ceiling 2; no persisted state. Blast radius is therefore one internal request path on one service in one dev cluster unless a prod cluster also runs it.",
+    "proportionality": "reduced",
+    "obligations": [
+      {
+        "property": "correct",
+        "establish": "The new rejection does not contradict the service's published contract: proto/hello/v1/hello.proto declares `string name = 1` with no required/validation option and documents Hello as answering \"hello \u003cname\u003e\"; confirm nothing in the repository's referenced docs (README.md, service.yaml, the proto comments, client/client.go doc block) states that a blank name is answered rather than refused, and note that the proto/comment was not updated to say name is now required. A contract or doc that promises an answer for an unset field, left unchanged, is a description-vs-behaviour mismatch.",
+        "evidence": "proto/hello/v1/hello.proto (service + HelloRequest comments); README.md; service.yaml; client/client.go package doc; the diff of internal/handlers/hello_service.go",
+        "if_not": "warning"
+      },
+      {
+        "property": "correct",
+        "establish": "No deployed caller sends an empty or whitespace-only name. The only caller measured is workload `traffic` (ns frontend, sa frontend) in e1-dev; service.yaml authorizes only smallStepGiantLeap/frontend for hello.v1.HelloService/Hello. Find the frontend repository's call site and show what it puts in HelloRequest.Name (a constant, a user field that can be blank, or an unset field). If it can send blank, those calls turn from OK into code 3 with no fallback.",
+        "evidence": "org-finder: repository smallStepGiantLeap/frontend, the construction of hellov1.HelloRequest; cross-check with the measured callers query (sum by (cluster, source_workload, source_principal) (rate(istio_requests_total{destination_service_namespace=\"hello\",reporter=\"destination\"}[1h]))) and rps showing response_code=200 only",
+        "if_not": "blocking"
+      },
+      {
+        "property": "correct",
+        "establish": "The change relies on nothing new from the platform: no new dependency call, no new configuration key, secret, cloud resource or identity; google.golang.org/grpc (codes, status) and strings are already available to this module, and `make test` compiles and passes. Show this as the finding rather than assuming it.",
+        "evidence": "go.mod of the root module; `go build ./... \u0026\u0026 go test -race -count=1 ./...` (Makefile target `test`) run in the mounted sandbox at 46ff747",
+        "if_not": "blocking"
+      },
+      {
+        "property": "reversible",
+        "establish": "Mixed-version behaviour during the canary is tolerable: with steps 10% then 50% (deploy/base/rollout.yaml), the same blank-name request gets OK \"hello \" from stable pods and InvalidArgument from canary pods, and the mesh will not retry code 3 away (virtual-service route `idempotent`: retryOn connect-failure,refused-stream,unavailable). Establish that no caller breaks on this nondeterminism — i.e. the frontend either never sends blank names or treats an error as non-fatal — and that rollback is clean: the service persists nothing, writes no schema, reads no configuration format this change alters, so reverting the image restores the old behaviour exactly.",
+        "evidence": "internal/handlers/hello_service.go (stateless handler, no storage); deploy/base/mesh/virtual-service.yaml retries block; deploy/base/rollout.yaml canary steps; frontend call-site error handling (org-finder)",
+        "if_not": "warning"
+      },
+      {
+        "property": "within_budget",
+        "establish": "Show the change adds no load: it adds no outbound call and no fan-out, and returns earlier for rejected requests; and the rejection cannot multiply traffic, because Hello's mesh retry policy lists only connect-failure,refused-stream,unavailable and the canonical client sets no retry policy (only a 10s timeout in client.ServiceConfig). Confirm against current numbers (3.2 rps, inflight 0, p99 17ms, 1 ready replica, ceiling 2) that nothing about load changes.",
+        "evidence": "internal/handlers/hello_service.go; deploy/base/mesh/virtual-service.yaml; client/client.go ServiceConfig; measured rps / inflight / p99_ms / ceiling queries already taken",
+        "if_not": "info"
+      },
+      {
+        "property": "stable_under_failure",
+        "establish": "The new error path fails fast and cannot sustain a failure: InvalidArgument is returned before any work, is not in the mesh retryOn list for the `idempotent` route, and the client adds no retries — so a caller that starts getting code 3 sends no more load than before. Establish also that the frontend caller does not retry application errors in a loop (which would turn a permanent code 3 into a hot loop against hello, whose per-caller load is otherwise unlimited).",
+        "evidence": "deploy/base/mesh/virtual-service.yaml (retries, both routes); client/client.go (no retry policy, 10s timeout); frontend call site and its retry/backoff handling (org-finder)",
+        "if_not": "warning"
+      },
+      {
+        "property": "progressively_delivered",
+        "establish": "The paved road exists and is used (owner query: all ReplicaSets in ns hello are owned by Rollout `hello`; Argo Rollouts canary 10%/5m -\u003e 50%/5m with analysis from step 1), but establish whether any stage would actually catch this change being wrong: the AnalysisTemplate `server-errors` query filters code=~\"Unknown|Internal|DataLoss|DeadlineExceeded\", which excludes InvalidArgument, so a canary rejecting 100% of real requests passes analysis and promotes. Also establish the ladder: discover.yaml answers say there is no staging cluster (dev -\u003e prod) and all measurements are from cluster e1-dev — confirm with the fleet whether a prod cluster runs hello, since that decides whether promotion of a blind canary reaches users.",
+        "evidence": "deploy/base/rollout.yaml (strategy.canary.steps, analysis templates, AnalysisTemplate server-errors query and successCondition); .paved-agent/discover.yaml answers.staging_exists; fleet listing plus topology for namespace hello, selector app=hello across all clusters (instances, rollout, image per cluster)",
+        "if_not": "warning"
+      },
+      {
+        "property": "available",
+        "establish": "Show the property is unaffected: the diff touches only internal/handlers/*.go, no manifest, probe, resource, lifecycle or security-context field, so PDB (expected pods 1), topology spread, probes, limits (memory 512Mi) and PSS restricted admission are unchanged by this change.",
+        "evidence": "the PR file list (two .go files); deploy/base/rollout.yaml and deploy/base/pdb.yaml unchanged at 46ff747",
+        "if_not": "info"
+      },
+      {
+        "property": "secure",
+        "establish": "Show the property is unaffected: no new path, no new permission, no new identity; the rejection message is the fixed string \"name is required\" and does not echo or log the caller-supplied name, so no caller data leaves the service in an error. Confirm nothing in the changed code logs req.GetName().",
+        "evidence": "internal/handlers/hello_service.go (status.Error call, no logging); measured denials query = 0; deploy/base/mesh/authz-allow-frontend.yaml unchanged",
+        "if_not": "info"
+      },
+      {
+        "property": "observable",
+        "establish": "An operator can tell that hello started rejecting requests: confirm the platform stats handler records the handler's status code into vikrant_rpcs_handled_total{code=\"InvalidArgument\"} and vikrant_unary_latency_seconds{code=...} for a unary error return (internal/platform/metrics/metrics.go, internal/platform/server/interceptors.go), so the discover.yaml `errors` query (code!=\"OK\") would show it. Note explicitly whether the mesh-level signals would miss it: Istio reports gRPC failures with response_code=200, so the measured rps query would stay all-200 while every call fails.",
+        "evidence": "internal/platform/metrics/metrics.go (handled CounterVec with code label) and the stats handler that calls it; .paved-agent/discover.yaml measure.errors and measure.rps",
+        "if_not": "warning"
+      },
+      {
+        "property": "observable",
+        "establish": "Establish what would actually page someone and whether the behaviour can be turned off without a deploy: the metrics stack is documented as having no alerting rules and the ALERTS{alertstate=\"firing\",namespace=\"hello\"} query returned no data, and the handler has no flag or dynamic configuration gating the validation (cmd/hello/main.go flags are -drain-delay, -drain-spread, -shutdown-timeout only). If both hold, a 100%-InvalidArgument regression is silent and only revertible by a redeploy — say so with the two citations.",
+        "evidence": "measured alerts query; .paved-agent/discover.yaml stack.metrics.is (\"no alerting rules\"); cmd/hello/main.go flag definitions; deploy/base/rollout.yaml container args",
+        "if_not": "warning"
+      },
+      {
+        "property": "proven",
+        "establish": "CI would not be broken by the change, and would catch it being wrong. Specifically: the e2e probe calls Hello with an all-default message (e2e/probe/main.go: cc.Invoke with \u0026emptypb.Empty{}), i.e. name=\"\" — so every e2e call to hello now returns InvalidArgument. Establish that the `reach` matcher (e2e/run.sh ~line 227: CODE* not in PermissionDenied|Unavailable|DeadlineExceeded) and the drain `no-errors` matcher (tally's failure list in e2e/probe/main.go ~line 89: Unavailable, DeadlineExceeded, Internal, Unknown, Canceled) both still pass with code 3, and that the canary-promotion assertion still passes given the analysis query excludes InvalidArgument. If any of these would fail, the PR cannot merge/publish.",
+        "evidence": "e2e/run.sh lines 225-233, 339, 359; e2e/probe/main.go lines 82-115; deploy/base/rollout.yaml AnalysisTemplate query; .github/workflows/ci.yaml jobs test/image/e2e",
+        "if_not": "blocking"
+      },
+      {
+        "property": "proven",
+        "establish": "Both new branches are tested at the repository's own standard: TestHelloRejectsEmptyName covers the whitespace case and TestHello covers trimming, and no other test in the repository still asserts the old \"hello \" answer for a blank name (notably client/client_test.go and internal/platform/server/*_test.go). Record that the previously-passing input \"\" -\u003e \"hello \" was deliberately deleted from TestHello, so no test now pins the old contract — which is the intent, but means nothing in CI flags the behaviour change for callers.",
+        "evidence": "internal/handlers/hello_service_test.go at head; grep for \"hello \" and HelloRequest across client/ and internal/; `go test -race -count=1 ./...` and `cd client \u0026\u0026 go test -race -count=1 ./...` (Makefile `test`)",
+        "if_not": "warning"
+      }
+    ]
+  },
+  "discovery": {
+    "stack": {
+      "admission": {
+        "is": "PSS restricted, no general policy engine",
+        "evidence": "deploy/base/rollout.yaml securityContext; discover.yaml"
+      },
+      "autoscaler": {
+        "is": "KEDA on in-flight RPCs, HPA ceiling 2",
+        "evidence": "measured ceiling/floor queries"
+      },
+      "deploy": {
+        "is": "Argo CD GitOps + Argo Rollouts canary (10%/5m -\u003e 50%/5m) with AnalysisTemplate server-errors",
+        "evidence": "deploy/base/rollout.yaml"
+      },
+      "enforcer": {
+        "is": "NetworkPolicy default-deny + allow-list",
+        "evidence": "deploy/base/network/* (via frontend's allow-to-hello.yaml)"
+      },
+      "mesh": {
+        "is": "Istio 1.31.1 sidecar mesh, strict mTLS",
+        "evidence": "discover.yaml stack.mesh; service.yaml authorizedCallers/ingress"
+      },
+      "metrics": {
+        "is": "prometheus scraping vikrant_* + kube-state + envoy, no alerting rules",
+        "evidence": "discover.yaml stack.metrics.is; measured ALERTS query empty"
+      }
+    },
+    "verified": [
+      "every obligation's evidence location existed and was read at head 46ff747"
+    ],
+    "broken": [],
+    "by_env": {
+      "dev": {
+        "clusters": [
+          "e1-dev"
+        ],
+        "instances": 1,
+        "rps": 3.22,
+        "callers": [
+          "traffic@frontend (sa frontend)"
+        ],
+        "external": false
+      }
+    }
+  },
+  "properties": {
+    "available": {
+      "verdict": "info",
+      "summary": "No manifest, probe, resource or lifecycle field touched; PDB, spread, probes and limits are unaffected."
+    },
+    "correct": {
+      "verdict": "warning",
+      "summary": "No deployed application code calls Hello with a real payload today (frontend has zero Go references to hello's client — org-finder confirmed); the only live caller is a synthetic 'traffic' load-generator of unknown script, and the proto/README contract is left saying Hello always answers."
+    },
+    "observable": {
+      "verdict": "warning",
+      "summary": "vikrant_rpcs_handled_total{code=\"InvalidArgument\"} would record the new failure and the discover.yaml errors query would show it, but there are no alerting rules, Istio reports it as response_code=200 so the rps dashboard is blind, and there is no flag to turn the validation off without a redeploy."
+    },
+    "progressively_delivered": {
+      "verdict": "warning",
+      "summary": "The canary pipeline exists and is used, but its AnalysisTemplate query excludes InvalidArgument from the error ratio, so a canary that fails 100% of Hello calls this way would still pass analysis and promote."
+    },
+    "proven": {
+      "verdict": "blocking",
+      "summary": "The platform's own e2e checks (`reach`, `no-errors`) and the canary AnalysisTemplate are all structurally blind to this exact regression: none of their matchers treat InvalidArgument as a failure, so CI and canary promotion would pass even if every real call to Hello started failing this way."
+    },
+    "reversible": {
+      "verdict": "info",
+      "summary": "Stateless, additive-only change; no stored format, migration, or caller pinned to the old blank-name answer; mesh does not retry InvalidArgument so mixed canary/stable versions diverge safely."
+    },
+    "secure": {
+      "verdict": "info",
+      "summary": "No new permission or identity; the rejection message is a fixed string and does not log or echo the caller-supplied name."
+    },
+    "stable_under_failure": {
+      "verdict": "info",
+      "summary": "InvalidArgument is outside the mesh's retryOn list and the canonical client sets no retry policy, so the new error cannot be amplified; no caller exists yet to loop on it."
+    },
+    "within_budget": {
+      "verdict": "info",
+      "summary": "No new call, no fan-out, rejection returns before any work; current load (3.2 rps, 0 inflight, ceiling 2) is unaffected either way."
+    }
+  },
+  "findings": [
+    {
+      "property": "proven",
+      "severity": "blocking",
+      "claim": "e2e/run.sh's `reach` matcher (`CODE* \u0026\u0026 !~ PermissionDenied|Unavailable|DeadlineExceeded`) and `no-errors` matcher (failure list `Unavailable,DeadlineExceeded,Internal,Unknown,Canceled`) both still match an output of 'CODE InvalidArgument' / 'LOOP ... failed=0 codes=InvalidArgument:N', so the frontend-reachability and node-drain checks pass whether Hello answers OK or rejects every call.",
+      "evidence": [
+        {
+          "kind": "config",
+          "source": "e2e/run.sh",
+          "query": "lines 225-233 (matches()), 339 (check reach), 359 (check no-errors)",
+          "value": "reach excludes only PermissionDenied|Unavailable|DeadlineExceeded; no-errors counts failed only from the probe's `failure` list"
+        },
+        {
+          "kind": "config",
+          "source": "e2e/probe/main.go",
+          "query": "line 89",
+          "value": "var failure = []codes.Code{Unavailable, DeadlineExceeded, Internal, Unknown, Canceled} — InvalidArgument absent"
+        }
+      ],
+      "recommendation": "Either add a probe mode that asserts response content/success for Hello specifically, or treat this gap as a platform-level blind spot to fix before relying on e2e/canary signals for business-logic error changes; until then this PR ships without any automated proof that the new rejection path behaves as intended end-to-end.",
+      "confidence": 0.85,
+      "studied": [
+        "e2e/run.sh",
+        "e2e/probe/main.go",
+        "deploy/base/rollout.yaml (AnalysisTemplate)"
+      ]
+    },
+    {
+      "property": "progressively_delivered",
+      "severity": "warning",
+      "claim": "AnalysisTemplate server-errors' query matches only code=~\"Unknown|Internal|DataLoss|DeadlineExceeded\"; a canary where 100% of Hello calls return InvalidArgument yields numerator 0 over any denominator, successCondition `result\u003c=0.01` holds, and the canary promotes at step 1/10%.",
+      "evidence": [
+        {
+          "kind": "config",
+          "source": "deploy/base/rollout.yaml",
+          "query": "AnalysisTemplate server-errors spec.metrics[0]",
+          "value": "query excludes InvalidArgument; successCondition passes on ratio 0"
+        }
+      ],
+      "recommendation": "Note for the platform/service owner that the canary gate does not catch application-level rejections (4xx-class gRPC codes); acceptable here only because current worst case is bounded (dev-only, no production cluster in the fleet, no confirmed real caller).",
+      "confidence": 0.9,
+      "studied": [
+        "deploy/base/rollout.yaml"
+      ]
+    },
+    {
+      "property": "correct",
+      "severity": "warning",
+      "claim": "frontend, the only authorized caller, has no Go call site constructing hellov1.HelloRequest at all (org-finder: no dependency on hello's client module in go.mod/go.sum, no reference in frontend's handler/main code); the single measured live caller is workload `traffic` in namespace frontend (0.52 req/s over 1h, 100% response_code=200), a synthetic load generator reusing frontend's identity per discover.yaml's answer, whose request payload is not found in either repository.",
+      "evidence": [
+        {
+          "kind": "doc",
+          "source": "org-finder report on smallStepGiantLeap/frontend",
+          "query": "grep -rni hello across repo",
+          "value": "hello appears only in service.yaml egress, NetworkPolicy, and a payload-free e2e reachability probe — no Go call site"
+        },
+        {
+          "kind": "metric",
+          "source": "discover.yaml measure.callers",
+          "query": "sum by (cluster, source_workload, source_principal) (rate(istio_requests_total{...}[1h]))",
+          "value": "{source_workload=traffic, source_principal=.../ns/frontend/sa/frontend} 0.526"
+        },
+        {
+          "kind": "answer",
+          "source": ".paved-agent/discover.yaml answers",
+          "query": "traffic_holds_frontend_identity",
+          "value": "yes — traffic load generator intentionally runs as sa frontend"
+        }
+      ],
+      "recommendation": "Confirm with a human whether the `traffic` generator ever sends a blank/whitespace name; if it is a fixed non-blank payload this finding is informational, if it can be blank the change breaks the only live caller today.",
+      "confidence": 0.6,
+      "studied": [
+        "frontend repo (via org-finder)",
+        "discover.yaml measure.callers, measure.rps"
+      ]
+    },
+    {
+      "property": "observable",
+      "severity": "warning",
+      "claim": "A 100%-InvalidArgument regression would be silent to anyone watching mesh-level dashboards or alerts: the metrics stack has no alerting rules (ALERTS{alertstate=\"firing\",namespace=\"hello\"} returned no data) and Istio records gRPC application errors with response_code=200 (measured rps query shows response_code=200 only), so only an operator querying vikrant_rpcs_handled_total{code=\"InvalidArgument\"} directly would see it; there is no flag to disable the validation without a redeploy (cmd/hello/main.go only exposes -drain-delay/-drain-spread/-shutdown-timeout).",
+      "evidence": [
+        {
+          "kind": "metric",
+          "source": "measured ALERTS query",
+          "query": "ALERTS{alertstate=\"firing\",namespace=\"hello\"}",
+          "value": "no data"
+        },
+        {
+          "kind": "metric",
+          "source": "measured rps query",
+          "query": "sum by (cluster, source_workload, response_code) (rate(istio_requests_total{...}[5m]))",
+          "value": "response_code=200 only (HTTP-level, masks gRPC status)"
+        },
+        {
+          "kind": "code",
+          "source": "cmd/hello/main.go",
+          "query": "flag definitions",
+          "value": "no feature flag gates the validation"
+        }
+      ],
+      "recommendation": "Add an alert rule on vikrant_rpcs_handled_total{code!=\"OK\"} rate for this service, since the metrics stack has none for any service yet.",
+      "confidence": 0.8,
+      "studied": [
+        "internal/platform/metrics/metrics.go",
+        "cmd/hello/main.go",
+        "measured alerts/rps queries"
+      ]
+    }
+  ],
+  "unknowns": [
+    {
+      "what": "Whether the synthetic traffic generator (workload `traffic`, sa frontend, the only live caller of Hello) ever sends an empty or whitespace-only name",
+      "tried": [
+        "grepped hello repo for 'traffic' — only Istio trafficPolicy/trafficRouting matches, no generator source",
+        "delegated to org-finder against smallStepGiantLeap/frontend — confirmed no Go call site to hello exists there either, so the generator is not frontend's own application code and its source is outside both reviewed repositories"
+      ],
+      "blocks": [
+        "correct",
+        "stable_under_failure"
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Does the `traffic` load-generator workload (namespace frontend, sa frontend) that currently calls hello.v1.HelloService/Hello ever send an empty or whitespace-only name?",
+      "blocks": [
+        "correct"
+      ],
+      "answers": {
+        "no": {
+          "path": ".paved-agent/discover.yaml",
+          "content": "answers:\n  - {question: traffic_sends_blank_name, answer: \"no\", detail: \"the traffic load generator in namespace frontend always sends a non-blank name to hello.v1.HelloService/Hello\"}"
+        },
+        "yes": {
+          "path": ".paved-agent/discover.yaml",
+          "content": "answers:\n  - {question: traffic_sends_blank_name, answer: \"yes\", detail: \"the traffic load generator in namespace frontend can send an empty/whitespace name to hello.v1.HelloService/Hello\"}"
+        }
+      }
+    }
+  ],
+  "proposals": [],
+  "verdict": "blocking",
+  "summary": "Business logic and tests are sound, and the change is low-risk today (no prod cluster exists, frontend has no real call site — only a synthetic traffic generator of unknown payload). But it ships with no safety net: the canary AnalysisTemplate's error-ratio query excludes InvalidArgument, and e2e's `reach`/`no-errors` matchers don't treat InvalidArgument as failure either — so a canary or a real caller failing 100% of Hello calls would pass CI and promote undetected, and nothing alerts on it. Fix the analysis query/e2e before trusting the paved road to catch this class of change."
+}

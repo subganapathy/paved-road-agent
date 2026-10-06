@@ -1,0 +1,40 @@
+session sesn_016mH2w9XzpfQuPUVkkgqqT4
+list cost $0.56  active 139s  turns 8
+tokens: new input 37.5k  cache read 172.9k  output 9.3k  (cache hit 82%)
+
+== lead  turns 8  new 37.5k  cache read 172.9k  output 9.3k  hit 82%  idle end_turn×1 requires_action×7
+   turns caused by                              turns    new in cache read   output
+   after bash                                       6     17.7k     137.7k     2.0k
+   continuation                                     1      2.3k      35.2k     7.2k
+   after scm_mount                                  1     17.5k          0      141
+   tool results                                 calls     bytes
+   bash                                             6     40.0k
+   scm_mount                                        1       219
+
+session sesn_01UgCVDk93FEe9CN8pWMgPDC
+list cost $0.46  active 192s  turns 18
+tokens: new input 75.9k  cache read 508.9k  output 16.2k  (cache hit 87%)
+
+== lead  turns 10  new 64.4k  cache read 457.5k  output 14.0k  hit 88%  idle end_turn×1 requires_action×19
+   turns caused by                              turns    new in cache read   output
+   continuation                                     4      5.4k     231.6k     5.5k
+   after bash                                       3      5.3k     171.2k     5.1k
+   after bash×3                                     1     26.2k      27.6k     2.2k
+   after bash×4                                     1       422      27.2k      986
+   after scm_mount, fleet                           1     27.2k          0      189
+   tool results                                 calls     bytes
+   bash                                            10     56.9k
+   scm_mount                                        1       219
+   fleet                                            1        69
+
+== Org finder  turns 8  new 11.5k  cache read 51.4k  output 2.2k  hit 82%  idle end_turn×1 requires_action×7
+   turns caused by                              turns    new in cache read   output
+   after bash                                       4      4.5k      25.3k      762
+   continuation                                     2      1.3k      20.6k     1.2k
+   after scm_mount                                  1       292       5.4k       84
+   after scm_search_code×2                          1      5.4k          0      202
+   tool results                                 calls     bytes
+   bash                                             4      7.7k
+   scm_mount                                        1       208
+   scm_search_code                                  2        44
+
