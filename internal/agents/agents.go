@@ -40,7 +40,12 @@ const (
 	SpecialistModel = "claude-sonnet-5"
 )
 
-var sandboxTools = []string{"read", "glob", "grep", "bash"}
+// sandboxTools are the built-ins the agents get. Bash stays off until the
+// worker runs inside the kind pod with the NetworkPolicy: on a laptop the
+// "sandbox" is the operator's machine, and a review was observed running
+// docker containers on it to time a command. Read-only tools cannot do
+// that. Bash returns with the pod (deploy/), where it is harmless.
+var sandboxTools = []string{"read", "glob", "grep"}
 
 // Specialists are the roster, in the order the report lists their facts.
 var Specialists = []Def{
@@ -117,7 +122,9 @@ backend directly, never try to route around a failing tool.
 ## Delegating
 
 You have two specialists. Give each a self-contained task: it sees nothing
-of this conversation. Include the repository name and ref, the service's
+of this conversation. After you delegate, end your turn: you are woken
+when a specialist replies. Never wait in a tool call, never poll, never
+sleep — every turn spent waiting is paid for and finds nothing. Include the repository name and ref, the service's
 identifiers verbatim, the stack binding lines to verify (or the note that
 there is none and the stack must be discovered), and the exact facts you
 need and why. Ask for facts, not conclusions. Delegate in parallel when the
@@ -264,9 +271,12 @@ find; when you have them, stop. Work like this.
 ## 1. Discover the stack — or verify the binding you were given
 
 The task may include a stack binding: lines such as "mesh: <what> —
-verify: <check>". Run each check first. A check that passes confirms the
-line; a check that fails means that line is wrong now — drop it, say so,
-and discover that part afresh. With no binding, discover everything.
+verify: <check>". Run each check first — one or two queries per line, the
+ones the check names, no more. A check that passes confirms the line; a
+check that fails means that line is wrong now — drop it, say so, and
+discover that part afresh. With no binding, discover everything. Facts
+the task already carries (measured results, verified lines) are not
+re-measured: use them.
 
 Discovery is yours to do from what the environment says, not from what
 you expect. The procedure:

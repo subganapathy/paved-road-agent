@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 )
 
@@ -296,10 +297,9 @@ func (r *Report) Render() string {
 	}
 	if len(r.Discovery.Stack) > 0 {
 		sb.WriteString("\nstack:\n")
-		for _, k := range []string{"mesh", "deploy", "admission", "enforcer", "autoscaler", "metrics"} {
-			if l, ok := r.Discovery.Stack[k]; ok {
-				fmt.Fprintf(&sb, "  %-11s %s\n", k+":", l.Is)
-			}
+		for _, k := range stackOrder(r.Discovery.Stack) {
+			name, is := stackLine(k, r.Discovery.Stack[k])
+			fmt.Fprintf(&sb, "  %-11s %s\n", name+":", is)
 		}
 		if len(r.Discovery.Broken) > 0 {
 			fmt.Fprintf(&sb, "  broken bindings: %s\n", strings.Join(r.Discovery.Broken, ", "))
@@ -363,10 +363,9 @@ func Markdown(r *Report, droppedCount int, usage string) string {
 	}
 	if len(r.Discovery.Stack) > 0 {
 		sb.WriteString("\n<details><summary>What this service runs on (discovered)</summary>\n\n")
-		for _, k := range []string{"mesh", "deploy", "admission", "enforcer", "autoscaler", "metrics"} {
-			if l, ok := r.Discovery.Stack[k]; ok {
-				fmt.Fprintf(&sb, "- **%s:** %s — _%s_\n", k, l.Is, l.Evidence)
-			}
+		for _, k := range stackOrder(r.Discovery.Stack) {
+			name, is := stackLine(k, r.Discovery.Stack[k])
+			fmt.Fprintf(&sb, "- **%s:** %s — _%s_\n", name, is, r.Discovery.Stack[k].Evidence)
 		}
 		if len(r.Discovery.Broken) > 0 {
 			fmt.Fprintf(&sb, "- broken bindings re-discovered: %s\n", strings.Join(r.Discovery.Broken, ", "))
@@ -413,4 +412,39 @@ func Markdown(r *Report, droppedCount int, usage string) string {
 		fmt.Fprintf(&sb, "\n<sub>%s</sub>\n", usage)
 	}
 	return sb.String()
+}
+
+// stackOrder lists the binding's keys: the six standard lines first, in
+// order, then anything else (path, …) alphabetically.
+func stackOrder(stack map[string]StackLine) []string {
+	known := []string{"mesh", "deploy", "admission", "enforcer", "autoscaler", "metrics", "path"}
+	var out, rest []string
+	seen := map[string]bool{}
+	for _, k := range known {
+		for key := range stack {
+			if (key == k || strings.HasPrefix(key, k+":")) && !seen[key] {
+				out = append(out, key)
+				seen[key] = true
+			}
+		}
+	}
+	for key := range stack {
+		if !seen[key] {
+			rest = append(rest, key)
+		}
+	}
+	sort.Strings(rest)
+	return append(out, rest...)
+}
+
+// stackLine tolerates the model writing the key as "name: value" with an
+// empty "is", which happens; it returns the name and the value either way.
+func stackLine(key string, l StackLine) (string, string) {
+	if i := strings.IndexByte(key, ':'); i >= 0 && strings.TrimSpace(l.Is) == "" {
+		return strings.TrimSpace(key[:i]), strings.TrimSpace(key[i+1:])
+	}
+	if i := strings.IndexByte(key, ':'); i >= 0 {
+		return strings.TrimSpace(key[:i]), strings.TrimSpace(key[i+1:]) + " — " + l.Is
+	}
+	return key, l.Is
 }

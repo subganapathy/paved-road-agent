@@ -1,0 +1,62 @@
+verdict: WARNING
+No blocking issue: both dev clusters, 1 client replica, and the path appliance (standalone Envoy, 20rps local rate limit + untripped circuit breakers) already cap and protect the server. The real risk is correctness, not capacity: the claimed 50rps is unreachable (measured grpcurl overhead plus the appliance's 20rps limiter cap real throughput near 20-25rps, with 429s above that), the change may be latent until an unrelated pod restart (no rollout-restart step found), and failures would be silent (zero alert rules fleet-wide, client output discarded).
+
+worst case: A ConfigMap-only edit (CALL_INTERVAL 0.2→0.02) raises the client's attempted call rate ~10x toward api.e5.internal:8443. Both clusters (e5-client, e5-server) are env=dev, client has 1/1 ready replica, server (namespace hello) has 2/2 ready replicas behind a standalone Envoy appliance (e5-appliance, outside both clusters) with its own rate limiter and circuit breakers. Blast radius is confined to two dev clusters and the shared appliance; no external exposure, no user traffic, no stored data or credentials. (reduced proof)
+
+stack:
+
+properties:
+  correct                  warning  sleep 0.02 works correctly (tested in the actual image), but the claimed 50rps is unreachable: measured grpcurl process overhead (~21ms/iteration) plus a 20ms sleep caps the loop near 20-25rps, and the appliance's own 20rps ingress rate limiter caps delivered throughput further; separately the ConfigMap-only change may not take effect until an unrelated pod restart under the confirmed plain-apply, no-GitOps pipeline (whose definition could not be located).
+  reversible               info     Confined to a ConfigMap value; no schema, contract or stored-data change; revert shares the same restart-latency caveat as the forward change, nothing else is left behind, and hello's replica count is static and unaffected by this diff.
+  within_budget            warning  The server (2/2 ready, 500m/256Mi limits, p99 ~0.1ms, 0 errors, no HPA) and appliance circuit breakers (all _open=0) have ample headroom, but the appliance's own 20rps local_ratelimit token bucket will reject traffic above ~20rps with HTTP 429 before it ever reaches hello_server_cluster — the intended 50rps load is not deliverable — and the client pod's own 200m/64Mi budget under 10x process spawns is unmeasurable (no cAdvisor anywhere in the fleet) and plausibly tight given measured ~21ms/iteration overhead.
+  stable_under_failure     info     No client-side retries (sequential loop, -max-time 3, pacing confirmed intact); the appliance's 3x retries fire only on connect-failure/unavailable/refused-stream (not on 429, confirmed envoy_cluster_upstream_rq_retry=0 today) and are themselves bounded by its circuit breakers (max_retries=10, max_requests=200), currently untripped — amplification during a real server outage is capped by the platform, unchanged by this diff.
+  progressively_delivered  info     Worst case is low by construction: both clusters are dev, client has 1/1 replica, hello is the sole application tenant in e5-server and hello_server_cluster is the appliance's only configured route — no staged-delivery road exists in this environment to bypass.
+  available                warning  Pod template, hardening (runAsNonRoot, seccompProfile, no added capabilities) and admission posture are byte-identical and restricted-compliant; the pre-existing single replica/no PDB is unchanged, but resource limits (200m/64Mi) were not raised despite declaring 10x more load, and headroom cannot be confirmed from metrics (no cAdvisor).
+  secure                   info     No sensitive data (constant `{"name":"client"}` payload), no new permissions, automountServiceAccountToken unchanged at false; the pre-existing plaintext, unauthenticated cross-cluster call is unchanged in kind, only in attempted volume.
+  observable               warning  Zero alert or recording rules exist anywhere in the backend (metrics_rules returned no groups, fleet-wide); client stdout/stderr go to /dev/null with no probes or metrics port, so a sustained run of 429s or timeouts would be invisible on the client side even though the appliance exposes counters (upstream_rq_total, local_rate_limit_rate_limited) that would show it if queried; no runbook documents CALL_INTERVAL's restart semantics.
+  proven                   warning  pra-client has no CI, no tests, and no manifest lint (repo tree is README.md, deploy/client.yaml, .paved-agent/ only); the sleep-validity and achievable-rate facts this PR rests on were established here by manual probing outside any pipeline, not by an automated check.
+
+[info] correct (confidence 0.90)
+  sleep "0.02" sleeps correctly (50 iterations took ~1.07s vs 1.0s expected) in fullstorydev/grpcurl:v1.9.3-alpine's busybox.
+  evidence (config): docker run fullstorydev/grpcurl:v1.9.3-alpine loop of 50x `sleep 0.02` timed via /proc/uptime = start=190067.59 end=190068.66 (Δ≈1.07s)
+  recommend: none needed; the pacing-loss concern is resolved.
+
+[warning] correct (confidence 0.75)
+  Delivered rate falls far short of the claimed 50rps: measured grpcurl process overhead is ~21ms/iteration (10 failed-dial calls took 0.21s), so a 20ms sleep yields a ~40ms cycle (~25rps ceiling), and today's nominal-5rps config (sleep 0.2) already only achieves 4.48rps at the appliance per envoy_cluster_upstream_rq_total, consistent with overhead eating into the interval.
+  evidence (config): docker run fullstorydev/grpcurl:v1.9.3-alpine 10x grpcurl against unreachable host, timed = 0.21s total (~21ms/iteration)
+  evidence (metric): Topology discoverer rate(envoy_cluster_upstream_rq_total{envoy_cluster_name="hello_server_cluster"}[5m]) = 4.48 rps at nominal 5rps config
+  recommend: Correct the description to state the realistic achieved rate (~20-25rps), not 50rps.
+
+[warning] within_budget (confidence 0.85)
+  The path appliance enforces a 20rps ingress token-bucket rate limit (max_tokens=20, fill=20/s) on the api.e5.internal route, below both the claimed 50rps and the realistic ~20-25rps the loop can reach, so sustained traffic above ~20rps will receive HTTP 429 rather than reach hello_server_cluster.
+  evidence (config): org-finder mount of pra-infra e5/envoy.yaml local_ratelimit filter = token_bucket max_tokens=20 tokens_per_fill=20 fill_interval=1s, status=429
+  evidence (metric): Topology discoverer envoy_http_local_rate_limit_ok / _rate_limited / _enforced = ok=2939, rate_limited=0, enforced=0 at current ~4.5rps
+  recommend: The appliance protects the server, but the experiment as described cannot exercise the server at 50rps; expect and plan for sustained 429s above ~20rps.
+
+[warning] within_budget (confidence 0.50)
+  Client pod CPU/memory usage against its 200m/64Mi limits cannot be measured (cAdvisor/container_* metric family absent fleet-wide for both client and hello, not a per-namespace gap), so whether 10x process spawns self-throttle or OOMKill the pod is unverified; measured per-iteration overhead (~21ms) against a ~40ms cycle implies substantial CPU pressure relative to the 200m limit.
+  evidence (metric): Topology discoverer container_cpu_usage_seconds_total{namespace="client"}, container_memory_working_set_bytes{namespace="client"} = no data; family absent from entire fleet __name__ listing
+  recommend: Add a cAdvisor/kubelet resource-metrics scrape job for this fleet, or accept the blind spot given the dev-only blast radius.
+
+[warning] correct (confidence 0.60)
+  The pod template in the diff is byte-identical; CALL_INTERVAL is consumed via envFrom at pod creation, and no pipeline definition performing an explicit rollout-restart was found in pra-client or pra-infra, so a plain apply may not change the running pod's behaviour until an unrelated restart.
+  evidence (diff): scm_pr deploy/client.yaml before/after = only the ConfigMap data line changes; Deployment spec unchanged
+  evidence (config): Org finder and Topology discoverer mounts of pra-client and pra-infra search for CI/CD/pipeline definitions = none found in either repo (only README.md, deploy/client.yaml, .paved-agent/discover.yaml in pra-client; infra/network manifests only in ...
+  recommend: Confirm with the team whether the apply pipeline performs a rollout restart; if not, trigger one explicitly with this change.
+
+[warning] observable (confidence 0.90)
+  No alert rule exists anywhere in the metrics backend (0 groups), and the client sends stdout/stderr to /dev/null with no probes or metrics port, so a sustained run of 429s or timeouts at 50rps would be invisible on the client side even though the appliance's own counters (upstream_rq_total, local_rate_limit_rate_limited) would show it if queried.
+  evidence (metric): metrics_rules all rule groups = {"groups": []}
+  evidence (diff): deploy/client.yaml grpcurl invocation = >/dev/null 2>&1, no probes, no metrics port
+  recommend: Add at least a basic liveness/readiness check or a dashboard panel on the appliance's local_rate_limit_rate_limited counter before relying on this fixture for load testing.
+
+unknown: Whether the pipeline that applies deploy/client.yaml performs an explicit rollout-restart (vs. plain apply) after a ConfigMap-only change (blocks correct, reversible); tried: Mounted pra-client (only README.md, deploy/client.yaml, .paved-agent/ present, no CI config); Mounted pra-infra via org-finder and topology discoverer (infra/network manifests only, no pipeline definitions)
+
+QUESTION q1 (blocks correct, reversible):
+  Does the CI/CD pipeline that applies deploy/client.yaml to cluster e5-client perform an explicit rollout-restart (e.g. `kubectl rollout restart deployment/client`) after applying manifests, so a ConfigMap-only change like CALL_INTERVAL takes effect immediately rather than at the next unrelated pod restart?
+  if yes → write to .paved-agent/discover.yaml:
+    answers:
+      - {question: "pipeline-rollout-restart", answer: "yes", detail: "The apply pipeline for pra-client runs an explicit rollout restart after apply, so ConfigMap-only changes take effect on the same deploy."}
+  if no → write to .paved-agent/discover.yaml:
+    answers:
+      - {question: "pipeline-rollout-restart", answer: "no", detail: "The apply pipeline for pra-client only applies manifests; ConfigMap-only changes (e.g. CALL_INTERVAL) do not take effect until an unrelated pod restart."}

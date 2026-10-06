@@ -59,7 +59,7 @@ func TestParamsWire(t *testing.T) {
 	for _, c := range set["configs"].([]any) {
 		enabled = append(enabled, c.(map[string]any)["name"].(string))
 	}
-	if len(enabled) != 4 {
+	if len(enabled) != 3 {
 		t.Errorf("built-ins = %v", enabled)
 	}
 	if len(tools)-1 != len(lead.Connectors) {
