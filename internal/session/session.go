@@ -7,12 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/subganapathy/paved-road-agent/internal/agents"
+	"github.com/subganapathy/paved-road-agent/internal/connectors"
 	"github.com/subganapathy/paved-road-agent/internal/findings"
 	"github.com/subganapathy/paved-road-agent/internal/github"
 	"github.com/subganapathy/paved-road-agent/internal/identifiers"
@@ -28,6 +30,34 @@ type Change struct {
 	// IdentifiersText is the file verbatim, so the lead sees exactly what
 	// the authors wrote.
 	IdentifiersText string
+	// Measured holds the results of the file's measure: queries, executed
+	// by the controller just before the session: workload → key → result.
+	Measured map[string]map[string]string
+}
+
+// Measure executes every measure: query in the identifiers through the
+// proxy. A query that fails yields its error text, which is itself a
+// fact the lead needs (the binding is stale, or the backend is down).
+func Measure(ctx context.Context, c *connectors.Client, f *identifiers.File) map[string]map[string]string {
+	if f == nil {
+		return nil
+	}
+	out := map[string]map[string]string{}
+	for _, w := range f.Workloads {
+		if len(w.Measure) == 0 {
+			continue
+		}
+		key := w.Namespace + "/" + w.Container
+		out[key] = map[string]string{}
+		for name, q := range w.Measure {
+			res, err := c.Query(ctx, q)
+			if err != nil {
+				res = "unavailable: " + err.Error()
+			}
+			out[key][name] = res
+		}
+	}
+	return out
 }
 
 // Brief is the initial message: everything the lead needs that its
@@ -53,6 +83,25 @@ func Brief(c Change) string {
 		for _, w := range c.Identifiers.Workloads {
 			if m := w.Missing(); len(m) > 0 {
 				fmt.Fprintf(&sb, "\nThe stack binding for workload %s/%s lacks: %s. The topology discoverer must discover those; the lines present must be verified.\n", w.Namespace, w.Container, strings.Join(m, ", "))
+			}
+		}
+		if len(c.Measured) > 0 {
+			sb.WriteString("\nMeasured just now, by running the file's measure: queries (query → result, one line per series as {labels} value). These are current facts; use them, cite the query as the evidence source, and do not re-run them. Delegate discovery only for what is missing here or whose verify check fails.\n")
+			keys := make([]string, 0, len(c.Measured))
+			for k := range c.Measured {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				fmt.Fprintf(&sb, "\nworkload %s:\n", k)
+				names := make([]string, 0, len(c.Measured[k]))
+				for n := range c.Measured[k] {
+					names = append(names, n)
+				}
+				sort.Strings(names)
+				for _, n := range names {
+					fmt.Fprintf(&sb, "  %s:\n    query: %s\n    result: %s\n", n, queryOf(c.Identifiers, k, n), indent(indent(c.Measured[k][n])))
+				}
 			}
 		}
 	} else {
@@ -188,6 +237,15 @@ func Collect(ctx context.Context, client anthropic.Client, id string) (*findings
 		return nil, s, text, err
 	}
 	return rep, s, text, nil
+}
+
+func queryOf(f *identifiers.File, workload, name string) string {
+	for _, w := range f.Workloads {
+		if w.Namespace+"/"+w.Container == workload {
+			return w.Measure[name]
+		}
+	}
+	return ""
 }
 
 func short(sha string) string {

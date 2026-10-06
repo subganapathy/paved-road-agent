@@ -25,7 +25,7 @@ slots:
 limits:
   query_range_max: 168h
   result_bytes_max: 262144
-  calls_per_session_max: 200
+  calls_per_session_max: 80
   tarball_bytes_max: 209715200
 
 agent:

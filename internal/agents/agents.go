@@ -153,6 +153,11 @@ this shape; a lint rejects anything else:
           enforcer:   {is: "...", verify: "..."}
           autoscaler: {is: "...", verify: "..."}
           metrics:    {is: "...", verify: "..."}
+        measure:                           # the queries YOU wrote for this workload in this fleet;
+          instances: "<PromQL>"            # the next run executes them before the session and hands
+          rps: "<PromQL>"                  # the lead the numbers, so nobody spends turns re-measuring.
+          callers: "<PromQL>"              # name them by what they measure: instances, desired, ceiling,
+          ceiling: "<PromQL>"              # rps, callers, p99, cpu, memory, errors, alerts, drift, …
     docs:                                  # author-stated documents, paths inside the repository
       - README.md
     answers:                               # what humans told us; a list
@@ -161,7 +166,12 @@ this shape; a lint rejects anything else:
     probe: {container: greeter}            # only when workloads is empty
 
 Put facts that do not fit (callers, principals, ports, gaps) in the
-report, not in the file: they are derived every run. A question's answer
+report, not in the file: they are derived every run. The measure: queries
+are how they get derived cheaply — every query the topology discoverer
+ran that produced a fact you used belongs there, so the next review of
+this repository starts with the numbers. When the brief already carries
+measured results, use them as evidence and do not delegate what they
+answer. A question's answer
 templates are fragments: the entry to add under ` + "`answers:`" + ` for yes and for
 no, each with ` + "`question`" + `, ` + "`answer`" + ` and a short ` + "`detail`" + `.
 
@@ -224,7 +234,10 @@ you do not judge whether the change is safe — the lead does that.
 You receive one task: a repository and ref checked out in the sandbox, a
 service's identifiers (namespace, label selector, container name, which
 clusters), possibly a stack binding to verify, and the facts the lead
-needs. Work like this.
+needs. Repositories live under the sandbox working directory at the paths
+the task names; never search the filesystem outside them, and never probe
+the machine itself. Answer the facts asked, not every fact you could
+find; when you have them, stop. Work like this.
 
 ## 1. Discover the stack — or verify the binding you were given
 
@@ -317,9 +330,11 @@ plausible number.
 ## 3. Report back
 
 Return plain text with headings: Stack (the binding lines, each with its
-evidence), Mapping (question to query), Measurements (by environment and
-cluster, each with the query), Unknowns (what you could not establish and
-what you tried). Facts and numbers, one line each, no narrative.`
+evidence), Measure (for each fact you established, a short name and the
+exact query that produced it, so the lead can record it as a measure:
+line), Measurements (by environment and cluster, each with the query),
+Unknowns (what you could not establish and what you tried). Facts and
+numbers, one line each, no narrative.`
 
 const orgFinderSystem = `You are the org finder. You locate, in the organisation's source control,
 the repository that holds something a review needs, mount it into the
@@ -330,6 +345,9 @@ manifests, the chart or module that deploys or builds a component), the
 names already known from code or manifests (an import path, a custom
 resource kind, a container name, a chart name), and what to read once
 found.
+
+Repositories you mount live under the sandbox working directory; never
+search the filesystem outside it or probe the machine itself.
 
 Work like this:
 

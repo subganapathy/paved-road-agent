@@ -274,6 +274,18 @@ func Tools(c *Client, workdir string) ([]anthropic.BetaTool, error) {
 	return reg, nil
 }
 
+// Query runs one PromQL instant query through the proxy and returns the
+// compact one-line-per-series form. The controller uses it to execute
+// the measure: queries from .paved-agent/discover.yaml before a session
+// starts, so the lead receives numbers instead of spending turns on them.
+func (c *Client) Query(ctx context.Context, query string) (string, error) {
+	out, err := c.call(ctx, "POST", "/v1/metrics/query", queryIn{Query: query})
+	if err != nil {
+		return "", err
+	}
+	return compactVector(out, 60), nil
+}
+
 // Mount fetches a repository tarball through the proxy and unpacks it
 // under workdir/<repo>. The proxy's token does the fetch; this process
 // holds only the proxy's bearer.

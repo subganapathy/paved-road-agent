@@ -66,7 +66,7 @@ type SCMSlot struct {
 type Limits struct {
 	QueryRangeMax      time.Duration `yaml:"query_range_max"`       // default 7d
 	ResultBytesMax     int           `yaml:"result_bytes_max"`      // default 256 KiB
-	CallsPerSessionMax int           `yaml:"calls_per_session_max"` // default 200
+	CallsPerSessionMax int           `yaml:"calls_per_session_max"` // default 80: past it, tools answer "unavailable" and the agents must stop exploring
 	TarballBytesMax    int64         `yaml:"tarball_bytes_max"`     // default 200 MiB
 }
 
@@ -98,7 +98,7 @@ func (c *Config) defaults() {
 		c.Limits.ResultBytesMax = 256 << 10
 	}
 	if c.Limits.CallsPerSessionMax == 0 {
-		c.Limits.CallsPerSessionMax = 200
+		c.Limits.CallsPerSessionMax = 80
 	}
 	if c.Limits.TarballBytesMax == 0 {
 		c.Limits.TarballBytesMax = 200 << 20

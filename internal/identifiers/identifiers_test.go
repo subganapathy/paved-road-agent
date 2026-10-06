@@ -15,11 +15,15 @@ workloads:
     stack:
       mesh: {is: "sidecar mesh, mTLS strict", verify: "a proxy sidecar in the pod template; the mesh's request metric reports destination hello"}
       deploy: {is: "staged rollout with analysis in prod", verify: "owner chain pod -> ReplicaSet -> progressive rollout object"}
+    measure:
+      instances: count by (cluster) (kube_pod_info{namespace="hello"} * on (namespace,pod) group_left kube_pod_status_ready{condition="true"})
+      rps: sum by (cluster) (rate(istio_requests_total{destination_workload="hello",reporter="destination"}[5m]))
 docs:
   - CLAUDE.md
   - docs/runbook.md
 answers:
   - cloud: {provider: gcp, resource: gs://hello-exports}
+  - {question: q3, answer: "no", detail: "there is no staging environment"}
 `
 
 func TestParseGood(t *testing.T) {

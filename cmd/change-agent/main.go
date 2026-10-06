@@ -369,6 +369,16 @@ func runReview(ctx context.Context, args []string) error {
 		}
 		change.Identifiers, change.IdentifiersText = f, text
 	}
+	if change.Identifiers != nil && !*dryRun {
+		// Run the file's measure: queries now, through the proxy, so the lead
+		// starts with numbers instead of spending turns on them.
+		proxyTok, _ := proxy.Credential(cfg.Token)
+		base := a.Agent.Proxy
+		if base == "" {
+			base = "http://" + cfg.Listen
+		}
+		change.Measured = session.Measure(ctx, &connectors.Client{Base: base, Token: proxyTok, Session: "premeasure-" + strings.ReplaceAll(*pr, "/", "-")}, change.Identifiers)
+	}
 	brief := session.Brief(change)
 	if *dryRun {
 		fmt.Println(brief)

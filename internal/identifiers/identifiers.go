@@ -45,6 +45,12 @@ type Workload struct {
 	Clusters Clusters `yaml:"clusters"`
 	// Stack is what this workload runs on, as the last run established it.
 	Stack map[string]Binding `yaml:"stack,omitempty"`
+	// Measure holds the queries the last run wrote to measure this workload
+	// in this fleet — instances, rps, callers, ceiling, utilization, … —
+	// keyed by what they measure. The next run executes them before the
+	// session starts and hands the numbers to the lead, so discovery is a
+	// re-run of the model's own program, not a new exploration.
+	Measure map[string]string `yaml:"measure,omitempty"`
 }
 
 // Clusters accepts "all", "prod", or ["prod-us", "prod-eu"].
@@ -191,6 +197,14 @@ func (f *File) Lint() error {
 		for k, b := range w.Stack {
 			if strings.TrimSpace(b.Is) == "" || strings.TrimSpace(b.Verify) == "" {
 				add("%s.stack.%s: both 'is' and 'verify' are required", at, k)
+			}
+		}
+		for k, q := range w.Measure {
+			if !nameRe.MatchString(strings.ReplaceAll(k, "_", "-")) {
+				add("%s.measure.%s: key must be a short lowercase name", at, k)
+			}
+			if strings.TrimSpace(q) == "" || len(q) > 1000 {
+				add("%s.measure.%s: a query is required and must be short", at, k)
 			}
 		}
 	}
