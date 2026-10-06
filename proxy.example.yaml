@@ -31,6 +31,7 @@ limits:
 
 agent:
   api_key: keychain:anthropic-managed-agent
+  workspace_id: ""                       # wrkspc_… from the Console URL, unless the key is workspace-scoped
   environment_id: ""                     # filled in after `change-agent setup`
   environment_key: keychain:paved-agent-env-key   # created in the Console for the self-hosted environment
   proxy: http://127.0.0.1:8080           # where the worker reaches the proxy

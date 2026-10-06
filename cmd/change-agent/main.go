@@ -71,6 +71,7 @@ func usage() {
 type agentConfig struct {
 	Agent struct {
 		APIKey         string  `yaml:"api_key"`         // credential source for the Anthropic API
+		WorkspaceID    string  `yaml:"workspace_id"`    // required unless the key is scoped to a workspace
 		EnvironmentID  string  `yaml:"environment_id"`  // filled by setup
 		EnvironmentKey string  `yaml:"environment_key"` // credential source for the self-hosted environment's key
 		Proxy          string  `yaml:"proxy"`           // where the worker reaches the proxy
@@ -96,7 +97,13 @@ func anthropicClient(a agentConfig) (anthropic.Client, error) {
 	if key == "" {
 		return anthropic.Client{}, errors.New("agent.api_key is required (a credential source such as keychain:anthropic-managed-agent)")
 	}
-	return anthropic.NewClient(option.WithAPIKey(key)), nil
+	opts := []option.RequestOption{option.WithAPIKey(key)}
+	if a.Agent.WorkspaceID != "" {
+		// Managed Agents resources live in a workspace. A key that is not
+		// scoped to one must say which on every request.
+		opts = append(opts, option.WithHeader("anthropic-workspace-id", a.Agent.WorkspaceID))
+	}
+	return anthropic.NewClient(opts...), nil
 }
 
 // lock records what setup created.
