@@ -57,6 +57,10 @@ func main() {
 		err = runServe(ctx, os.Args[2:])
 	case "trace":
 		err = runTrace(ctx, os.Args[2:])
+	case "cost":
+		err = runCost(ctx, os.Args[2:])
+	case "sessions":
+		err = runSessions(ctx, os.Args[2:])
 	default:
 		usage()
 	}
@@ -67,7 +71,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: change-agent setup|proxy|worker|review|serve [flags]")
+	fmt.Fprintln(os.Stderr, "usage: change-agent setup|proxy|worker|review|serve|trace|cost|sessions [flags]")
 	os.Exit(2)
 }
 
@@ -550,6 +554,106 @@ func runTrace(ctx context.Context, args []string) error {
 		return err
 	}
 	return session.Trace(ctx, client, *id, os.Stdout, *width)
+}
+
+// runCost attributes a session's tokens to the tool calls that caused
+// each turn, so cost work rests on measurement.
+func runCost(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("cost", flag.ExitOnError)
+	cfgPath := fs.String("config", "proxy.yaml", "configuration file")
+	ids := fs.String("session", "", "session id, or several separated by commas (a staged review has two)")
+	turns := fs.Bool("turns", false, "also print the turn-by-turn timeline")
+	asJSON := fs.Bool("json", false, "print the analysis as JSON")
+	fs.Parse(args)
+	if *ids == "" {
+		return errors.New("--session is required")
+	}
+	a, err := loadAgentConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	client, err := anthropicClient(a)
+	if err != nil {
+		return err
+	}
+	for _, id := range strings.Split(*ids, ",") {
+		c, err := session.Analyze(ctx, client, strings.TrimSpace(id), *turns)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			os.Stdout.Write(c.JSON())
+			fmt.Println()
+			continue
+		}
+		c.Render(os.Stdout)
+	}
+	return nil
+}
+
+// runSessions lists recent sessions with what each cost: the ledger.
+func runSessions(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("sessions", flag.ExitOnError)
+	cfgPath := fs.String("config", "proxy.yaml", "configuration file")
+	lockPath := fs.String("lock", "agents.lock.json", "from setup, to name agents")
+	limit := fs.Int("limit", 30, "how many")
+	fs.Parse(args)
+	a, err := loadAgentConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	client, err := anthropicClient(a)
+	if err != nil {
+		return err
+	}
+	names := map[string]string{}
+	if b, err := os.ReadFile(*lockPath); err == nil {
+		var l lock
+		if json.Unmarshal(b, &l) == nil {
+			for key, ag := range l.Agents {
+				names[ag.ID] = key
+			}
+		}
+	}
+	pager := client.Beta.Sessions.ListAutoPaging(ctx, anthropic.BetaSessionListParams{Order: anthropic.BetaSessionListParamsOrderDesc, Limit: anthropic.Int(int64(*limit))})
+	var total int64
+	n := 0
+	fmt.Printf("%-30s %-16s %-14s %-10s %7s %8s %8s %8s  %s\n", "session", "created", "agent", "status", "cost", "turns-in", "cached", "out", "title")
+	for pager.Next() && n < *limit {
+		s := pager.Current()
+		n++
+		var cents int64
+		fmt.Sscan(s.Usage.ListCost.Amount, &cents)
+		total += cents
+		agent := names[s.Agent.ID]
+		if agent == "" {
+			agent = s.Agent.ID
+		}
+		fmt.Printf("%-30s %-16s %-14s %-10s %7s %8s %8s %8s  %s\n", s.ID, s.CreatedAt.Local().Format("01-02 15:04"), clipStr(agent, 14), s.Status,
+			fmt.Sprintf("$%.2f", float64(cents)/100), kTokens(s.Usage.InputTokens+s.Usage.CacheCreation.Ephemeral1hInputTokens+s.Usage.CacheCreation.Ephemeral5mInputTokens), kTokens(s.Usage.CacheReadInputTokens), kTokens(s.Usage.OutputTokens), clipStr(s.Title, 60))
+	}
+	if err := pager.Err(); err != nil {
+		return err
+	}
+	fmt.Printf("%d sessions, $%.2f at list price\n", n, float64(total)/100)
+	return nil
+}
+
+func clipStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+func kTokens(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.2fM", float64(n)/1e6)
+	case n >= 1000:
+		return fmt.Sprintf("%.0fk", float64(n)/1e3)
+	}
+	return fmt.Sprint(n)
 }
 
 // ---- serve ----------------------------------------------------------------

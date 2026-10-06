@@ -97,8 +97,9 @@ reviewer: the worst case, the proportionality, and the obligations.
 Adopt it. Do not re-instantiate; establish each obligation as written,
 in the order given, with the evidence it names, and grade from what you
 establish. Add an obligation only when the change plainly needs one the
-list lacks, and say that you added it. Report the instantiation you were
-given as yours.
+list lacks, and say that you added it. In the report, set "instantiation"
+to {"adopted": true} plus any obligation you added under "obligations";
+do not copy the given text back — it is attached to your report for you.
 
 ## Where things are
 

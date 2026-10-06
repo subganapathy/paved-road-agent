@@ -26,6 +26,13 @@ func fakePrometheus(t *testing.T) (*httptest.Server, *[]string) {
 		switch r.URL.Path {
 		case "/api/v1/label/__name__/values":
 			w.Write([]byte(`{"status":"success","data":["kube_pod_info","istio_requests_total","up"]}`))
+		case "/api/v1/label/long/values":
+			var names []string
+			for i := 0; i < 400; i++ {
+				names = append(names, fmt.Sprintf("%s_metric_%03d", []string{"kube", "istio", "envoy", "go"}[i%4], i))
+			}
+			b, _ := json.Marshal(map[string]any{"status": "success", "data": names})
+			w.Write(b)
 		case "/api/v1/query":
 			w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{"cluster":"prod"},"value":[1,"2"]}]}}`))
 		case "/api/v1/query_range", "/api/v1/series", "/api/v1/rules":
@@ -127,6 +134,21 @@ func TestMetricsReadsPassThroughWithAuth(t *testing.T) {
 	}
 	if len(*seen) != 2 || !strings.HasPrefix((*seen)[0], "/api/v1/label/__name__/values") {
 		t.Errorf("backend saw %v", *seen)
+	}
+}
+
+func TestLongLabelListingsAreGrouped(t *testing.T) {
+	_, ts, _, _ := newTestServer(t, Limits{})
+	status, _, body := call(t, ts, "POST", "/v1/metrics/label_values", map[string]any{"label": "long"}, "s1")
+	if status != 200 || !strings.Contains(string(body), `"families"`) || strings.Contains(string(body), "kube_metric_396") {
+		t.Fatalf("a long listing is grouped by prefix, not listed: %d %.300s", status, body)
+	}
+	if !strings.Contains(string(body), `"count":400`) || !strings.Contains(string(body), "istio (100)") {
+		t.Errorf("groups carry counts: %.400s", body)
+	}
+	status, _, body = call(t, ts, "POST", "/v1/metrics/label_values", map[string]any{"label": "long", "contains": "envoy_"}, "s1")
+	if status != 200 || !strings.Contains(string(body), `"count":100`) || !strings.Contains(string(body), "envoy_metric_398") || strings.Contains(string(body), "kube_") {
+		t.Fatalf("contains narrows to one family, listed in full: %d %.300s", status, body)
 	}
 }
 

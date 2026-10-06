@@ -76,7 +76,8 @@ type (
 	emptyIn       struct{}
 	labelValuesIn struct {
 		Label string   `json:"label" jsonschema:"required" jsonschema_description:"The label whose values to list. Use __name__ to list every metric family the fleet exports: that is how you learn what is there before forming queries."`
-		Match []string `json:"match,omitempty" jsonschema_description:"Optional series selectors to narrow the listing, e.g. {namespace=\"hello\"}"`
+		Match    []string `json:"match,omitempty" jsonschema_description:"Optional series selectors to narrow the listing, e.g. {namespace=\"hello\"}"`
+		Contains string   `json:"contains,omitempty" jsonschema_description:"Keep only values containing this substring. A long __name__ listing comes back grouped by family prefix; use contains=<prefix> to see one family's names."`
 	}
 	queryIn struct {
 		Query string `json:"query" jsonschema:"required" jsonschema_description:"A PromQL instant query"`
@@ -178,7 +179,7 @@ func Tools(c *Client, workdir string) ([]anthropic.BetaTool, error) {
 				return text(out)
 			})),
 		add(toolrunner.NewBetaToolFromJSONSchema(MetricsLabelVals,
-			"List the values of a metric label. With label __name__ it lists every metric family the fleet's metrics backend has: start stack discovery here and recognise, from the names, which cluster-state exporter, mesh, deployment tool, progressive-delivery controller, autoscaler, policy enforcer and admission engine are present — or absent. Returns the backend's raw JSON.",
+			"List the values of a metric label. With label __name__ it lists every metric family the fleet's metrics backend has: start stack discovery here and recognise, from the names, which cluster-state exporter, mesh, deployment tool, progressive-delivery controller, autoscaler, policy enforcer and admission engine are present — or absent. A long listing is grouped by family prefix with examples; narrow with contains.",
 			func(ctx context.Context, in labelValuesIn) (anthropic.BetaToolResultBlockParamContentUnion, error) {
 				out, err := c.call(ctx, "POST", "/v1/metrics/label_values", in)
 				if err != nil {

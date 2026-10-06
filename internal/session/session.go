@@ -14,6 +14,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/subganapathy/paved-road-agent/internal/agents"
+	"github.com/subganapathy/paved-road-agent/internal/change"
 	"github.com/subganapathy/paved-road-agent/internal/connectors"
 	"github.com/subganapathy/paved-road-agent/internal/findings"
 	"github.com/subganapathy/paved-road-agent/internal/github"
@@ -74,7 +75,8 @@ func Brief(c Change) string {
 	for _, f := range c.PR.Change.Files {
 		fmt.Fprintf(&sb, "- %s (%s)\n", f.Path, f.Status)
 	}
-	fmt.Fprintf(&sb, "\nFirst, mount the repository at the head commit with scm_mount(repo=%q, ref=%q); it unpacks under the sandbox's working directory. The diff itself comes from scm_pr(repo=%q, number=%s).\n",
+	writeDiff(&sb, c.PR.Change.Files)
+	fmt.Fprintf(&sb, "\nThe repository at the head commit mounts with scm_mount(repo=%q, ref=%q) under the sandbox's working directory, for anything beyond what is shown here. scm_pr(repo=%q, number=%s) returns the same diff; there is no need to call it.\n",
 		c.Repo, c.PR.HeadSHA, c.Repo, number)
 	if c.Identifiers != nil {
 		sb.WriteString("\nThe repository's .paved-agent/discover.yaml, verbatim:\n\n")
@@ -144,56 +146,126 @@ func Create(ctx context.Context, client anthropic.Client, o Options, brief strin
 	return client.Beta.Sessions.New(ctx, params)
 }
 
-// Wait polls until the session has finished: terminated, or idle because
-// the lead ended its turn. A session is also idle between every tool call
-// (stop reason requires_action), which is not finished; the session
-// object does not say why it is idle, so the last status_idle event does.
-func Wait(ctx context.Context, client anthropic.Client, id string, every time.Duration) (*anthropic.BetaManagedAgentsSession, error) {
+// Wait polls until the session has finished. A session is idle between
+// every tool call (stop reason requires_action), which is not finished;
+// and when the lead ends its turn after delegating, it is idle with
+// end_turn while a specialist still runs, which is not finished either:
+// the specialist's reply is written to the lead's input stream and
+// resumes it. So finished means: terminated; or the lead's latest idle
+// is end_turn, no thread is running, and no reply reached the lead after
+// that idle. If a reply does sit unprocessed after an end_turn for
+// longer than ReplyGrace, the lead is not going to resume on its own and
+// Wait returns so the caller can nudge it.
+//
+// afterIdle is the id of the idle event the caller has already acted on
+// (it nudged); Wait does not return for that same idle again. The
+// returned string is the idle event the caller is now acting on.
+func Wait(ctx context.Context, client anthropic.Client, id string, every time.Duration, afterIdle string) (*anthropic.BetaManagedAgentsSession, string, error) {
+	var replySeen time.Time
 	for {
 		s, err := client.Beta.Sessions.Get(ctx, id, anthropic.BetaSessionGetParams{})
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if s.Status == anthropic.BetaManagedAgentsSessionStatusTerminated {
-			return s, nil
+			return s, "", nil
 		}
 		if s.Status == anthropic.BetaManagedAgentsSessionStatusIdle {
-			reason, err := lastIdleReason(ctx, client, id)
+			st, err := leadState(ctx, client, id)
 			if err != nil {
-				return nil, err
+				return nil, "", err
 			}
-			if reason != "requires_action" {
-				return s, nil
+			switch {
+			case st.reason == "requires_action", st.idleID == "", st.idleID == afterIdle:
+			case st.replyAt.After(st.idleAt):
+				// A reply arrived after the lead stopped; give the platform
+				// time to resume the lead before concluding it will not.
+				if replySeen.IsZero() {
+					replySeen = time.Now()
+				} else if time.Since(replySeen) > ReplyGrace {
+					return s, st.idleID, nil
+				}
+			default:
+				running, err := threadsRunning(ctx, client, id)
+				if err != nil {
+					return nil, "", err
+				}
+				if running == 0 {
+					return s, st.idleID, nil
+				}
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, "", ctx.Err()
 		case <-time.After(every):
 		}
 	}
 }
 
-// lastIdleReason returns the stop reason of the most recent
-// session.status_idle event on the main thread.
-func lastIdleReason(ctx context.Context, client anthropic.Client, id string) (string, error) {
-	pager := client.Beta.Sessions.Events.ListAutoPaging(ctx, id, anthropic.BetaSessionEventListParams{
-		Order: anthropic.BetaSessionEventListParamsOrderDesc,
-		Limit: anthropic.Int(50),
-	})
-	for pager.Next() {
-		ev := pager.Current()
-		if ev.Type == "session.status_idle" && ev.SessionThreadID == "" {
-			return ev.AsSessionStatusIdle().StopReason.Type, nil
-		}
-	}
-	return "", pager.Err()
+// ReplyGrace is how long an unprocessed specialist reply may sit after
+// the lead's end_turn before Wait concludes the lead needs a nudge.
+const ReplyGrace = 90 * time.Second
+
+type leadIdle struct {
+	idleID  string
+	reason  string
+	idleAt  time.Time
+	replyAt time.Time // the latest specialist reply delivered to the lead
 }
 
-// LastLeadMessage returns the text of the last agent.message on the main
-// thread: the lead's report.
-func LastLeadMessage(ctx context.Context, client anthropic.Client, id string) (string, error) {
-	var last string
+// leadState reads the lead's most recent idle and the most recent reply
+// delivered to it, from the newest events backwards.
+func leadState(ctx context.Context, client anthropic.Client, id string) (leadIdle, error) {
+	var st leadIdle
+	pager := client.Beta.Sessions.Events.ListAutoPaging(ctx, id, anthropic.BetaSessionEventListParams{
+		Order: anthropic.BetaSessionEventListParamsOrderDesc,
+		Limit: anthropic.Int(100),
+	})
+	n := 0
+	for pager.Next() {
+		ev := pager.Current()
+		n++
+		if ev.SessionThreadID != "" {
+			continue
+		}
+		switch ev.Type {
+		case "session.status_idle":
+			if st.idleID == "" {
+				idle := ev.AsSessionStatusIdle()
+				st.idleID, st.reason, st.idleAt = idle.ID, idle.StopReason.Type, idle.ProcessedAt
+			}
+		case "agent.thread_message_received":
+			if st.replyAt.IsZero() {
+				st.replyAt = ev.AsAgentThreadMessageReceived().ProcessedAt
+			}
+		}
+		if st.idleID != "" && (!st.replyAt.IsZero() || n > 400) {
+			break
+		}
+	}
+	return st, pager.Err()
+}
+
+func threadsRunning(ctx context.Context, client anthropic.Client, id string) (int, error) {
+	n := 0
+	pager := client.Beta.Sessions.Threads.ListAutoPaging(ctx, id, anthropic.BetaSessionThreadListParams{Limit: anthropic.Int(50)})
+	for pager.Next() {
+		switch pager.Current().Status {
+		case anthropic.BetaManagedAgentsSessionThreadStatusRunning, anthropic.BetaManagedAgentsSessionThreadStatusRescheduling:
+			n++
+		}
+	}
+	return n, pager.Err()
+}
+
+// LastLeadReport returns the lead's most recent message that parses as a
+// report, and the text of its last message. A lead that says "no change"
+// after a late specialist reply has still delivered its report; making
+// it repeat 7k tokens of JSON is the single most expensive habit a
+// collector can have.
+func LastLeadReport(ctx context.Context, client anthropic.Client, id string) (*findings.Report, string, error) {
+	var messages []string
 	pager := client.Beta.Sessions.Events.ListAutoPaging(ctx, id, anthropic.BetaSessionEventListParams{
 		Order: anthropic.BetaSessionEventListParamsOrderAsc,
 		Limit: anthropic.Int(100),
@@ -210,33 +282,103 @@ func LastLeadMessage(ctx context.Context, client anthropic.Client, id string) (s
 			}
 		}
 		if sb.Len() > 0 {
-			last = sb.String()
+			messages = append(messages, sb.String())
 		}
 	}
 	if err := pager.Err(); err != nil {
-		return "", err
+		return nil, "", err
 	}
+	if len(messages) == 0 {
+		return nil, "", errors.New("the lead sent no message")
+	}
+	last := messages[len(messages)-1]
+	var firstErr error
+	for i := len(messages) - 1; i >= 0; i-- {
+		rep, err := findings.Parse(messages[i])
+		if err == nil {
+			return rep, last, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return nil, last, firstErr
+}
+
+// LastLeadMessage returns the text of the last agent.message on the main
+// thread.
+func LastLeadMessage(ctx context.Context, client anthropic.Client, id string) (string, error) {
+	_, last, err := LastLeadReport(ctx, client, id)
 	if last == "" {
-		return "", errors.New("the lead sent no message")
+		return "", err
 	}
 	return last, nil
 }
 
 // Collect waits for the session and parses the report.
 func Collect(ctx context.Context, client anthropic.Client, id string) (*findings.Report, *anthropic.BetaManagedAgentsSession, string, error) {
-	s, err := Wait(ctx, client, id, 5*time.Second)
+	rep, s, text, _, err := collect(ctx, client, id, "")
+	return rep, s, text, err
+}
+
+func collect(ctx context.Context, client anthropic.Client, id, afterIdle string) (*findings.Report, *anthropic.BetaManagedAgentsSession, string, string, error) {
+	s, idleID, err := Wait(ctx, client, id, 5*time.Second, afterIdle)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", "", err
 	}
-	text, err := LastLeadMessage(ctx, client, id)
-	if err != nil {
-		return nil, s, "", err
+	rep, text, err := LastLeadReport(ctx, client, id)
+	return rep, s, text, idleID, err
+}
+
+// Brief budgets: the diff and the changed files are the cheapest context
+// a reviewer can have — one cache write, no tool-call turns — up to a
+// point. Beyond it, the files are there to read after mounting.
+const (
+	briefDiffBytes  = 48 << 10 // all patches together
+	briefFileBytes  = 16 << 10 // one whole file
+	briefFilesBytes = 40 << 10 // all whole files together
+)
+
+// writeDiff puts the patches and then the changed files at the head into
+// the brief, within the budgets.
+func writeDiff(sb *strings.Builder, files []change.File) {
+	sb.WriteString("\nThe diff:\n")
+	used := 0
+	for _, f := range files {
+		if f.Patch == "" {
+			continue
+		}
+		if used+len(f.Patch) > briefDiffBytes {
+			fmt.Fprintf(sb, "\n--- %s: patch omitted here (%d bytes; read the file after mounting)\n", f.Path, len(f.Patch))
+			continue
+		}
+		fmt.Fprintf(sb, "\n--- %s (%s)\n%s\n", f.Path, f.Status, strings.TrimRight(f.Patch, "\n"))
+		used += len(f.Patch)
 	}
-	rep, err := findings.Parse(text)
-	if err != nil {
-		return nil, s, text, err
+	used = 0
+	wrote := false
+	for _, f := range files {
+		if f.After == "" || f.Status == change.Deleted {
+			continue
+		}
+		body := f.After
+		truncated := false
+		if len(body) > briefFileBytes {
+			body, truncated = body[:briefFileBytes], true
+		}
+		if used+len(body) > briefFilesBytes {
+			break
+		}
+		if !wrote {
+			sb.WriteString("\nChanged files at the head, whole, so the code around the diff is in view:\n")
+			wrote = true
+		}
+		fmt.Fprintf(sb, "\n=== %s\n%s\n", f.Path, strings.TrimRight(body, "\n"))
+		if truncated {
+			fmt.Fprintf(sb, "=== (%s truncated at %d bytes of %d)\n", f.Path, briefFileBytes, len(f.After))
+		}
+		used += len(body)
 	}
-	return rep, s, text, nil
 }
 
 func queryOf(f *identifiers.File, workload, name string) string {
@@ -278,13 +420,14 @@ func Nudge(ctx context.Context, client anthropic.Client, id, text string) error 
 const MaxNudges = 2
 
 // CollectReport waits for the lead and parses its report, nudging the
-// session on when it ends without one.
+// session on when it ends without one. Each nudge is acted on once: the
+// next wait ignores the idle that prompted it.
 func CollectReport(ctx context.Context, client anthropic.Client, id string) (*findings.Report, *anthropic.BetaManagedAgentsSession, string, error) {
 	var last *anthropic.BetaManagedAgentsSession
-	var text string
+	var text, afterIdle string
 	for try := 0; ; try++ {
-		rep, s, t, err := Collect(ctx, client, id)
-		last, text = s, t
+		rep, s, t, idleID, err := collect(ctx, client, id, afterIdle)
+		last, text, afterIdle = s, t, idleID
 		if err == nil {
 			return rep, s, t, nil
 		}

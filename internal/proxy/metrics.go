@@ -2,11 +2,14 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -35,10 +38,16 @@ type (
 		Start, End string
 	}
 	labelValuesReq struct {
-		Label string
-		Match []string
+		Label    string
+		Match    []string
+		Contains string
 	}
 )
+
+// labelValuesMax is how many values come back as a plain list; above it a
+// __name__ listing is grouped by family prefix, because a thousand metric
+// names cost the model six thousand tokens and it reads only the prefixes.
+const labelValuesMax = 150
 
 // get performs one read against the backend's API and returns the raw
 // body: the model reads the backend's JSON directly, which is both the
@@ -109,7 +118,10 @@ func (m *metricsSlot) series(ctx context.Context, p *Policy, r seriesReq) ([]byt
 }
 
 // labelValues with label "__name__" is how the model learns what the
-// fleet exports: the first step of stack discovery.
+// fleet exports: the first step of stack discovery. The result is
+// compacted: filtered by Contains, and when still long, grouped by the
+// prefix before the first underscore with a few examples each, so the
+// model sees which exporters are present and narrows with Contains.
 func (m *metricsSlot) labelValues(ctx context.Context, r labelValuesReq) ([]byte, int, error) {
 	if r.Label == "" {
 		return nil, 0, fmt.Errorf("label is required")
@@ -118,7 +130,61 @@ func (m *metricsSlot) labelValues(ctx context.Context, r labelValuesReq) ([]byte
 	for _, mt := range r.Match {
 		q.Add("match[]", mt)
 	}
-	return m.get(ctx, "/api/v1/label/"+url.PathEscape(r.Label)+"/values", q)
+	body, status, err := m.get(ctx, "/api/v1/label/"+url.PathEscape(r.Label)+"/values", q)
+	if err != nil || status/100 != 2 {
+		return body, status, err
+	}
+	var resp struct {
+		Status string   `json:"status"`
+		Data   []string `json:"data"`
+	}
+	if json.Unmarshal(body, &resp) != nil || resp.Status != "success" {
+		return body, status, nil
+	}
+	values := resp.Data
+	if r.Contains != "" {
+		kept := values[:0:0]
+		for _, v := range values {
+			if strings.Contains(v, r.Contains) {
+				kept = append(kept, v)
+			}
+		}
+		values = kept
+	}
+	sort.Strings(values)
+	out := map[string]any{"label": r.Label, "count": len(values)}
+	if r.Contains != "" {
+		out["contains"] = r.Contains
+	}
+	if len(values) <= labelValuesMax {
+		out["values"] = values
+	} else {
+		groups := map[string][]string{}
+		var order []string
+		for _, v := range values {
+			prefix := v
+			if i := strings.IndexByte(v, '_'); i > 0 {
+				prefix = v[:i]
+			}
+			if _, ok := groups[prefix]; !ok {
+				order = append(order, prefix)
+			}
+			groups[prefix] = append(groups[prefix], v)
+		}
+		summary := make([]string, 0, len(order))
+		for _, prefix := range order {
+			g := groups[prefix]
+			examples := g
+			if len(examples) > 6 {
+				examples = examples[:6]
+			}
+			summary = append(summary, fmt.Sprintf("%s (%d): %s", prefix, len(g), strings.Join(examples, ", ")))
+		}
+		out["families"] = summary
+		out["note"] = fmt.Sprintf("%d values; grouped by prefix with up to six examples each. List one family with contains=<prefix>.", len(values))
+	}
+	b, _ := json.Marshal(out)
+	return b, status, nil
 }
 
 func (m *metricsSlot) rules(ctx context.Context) ([]byte, int, error) {

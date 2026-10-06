@@ -28,9 +28,10 @@ func (s Staged) Run(ctx context.Context, client anthropic.Client, brief string) 
 	out.Sessions = append(out.Sessions, first.ID)
 	var in *findings.Instantiation
 	var final *anthropic.BetaManagedAgentsSession
+	var afterIdle string
 	for try := 0; ; try++ {
 		var text string
-		final, err = Wait(ctx, client, first.ID, 5e9)
+		final, afterIdle, err = Wait(ctx, client, first.ID, 5e9, afterIdle)
 		if err != nil {
 			return out, err
 		}
@@ -54,7 +55,8 @@ func (s Staged) Run(ctx context.Context, client anthropic.Client, brief string) 
 	out.Usage = append(out.Usage, usageLine("instantiate", final))
 
 	execBrief := brief + "\n\n# Instantiation, written by the senior reviewer — adopt it\n\n" + in.Render() +
-		"\nEstablish each obligation with the evidence it names; grade from what you establish; finish with the report JSON."
+		"\nEstablish each obligation with the evidence it names; grade from what you establish; finish with the report JSON. " +
+		"In the report write \"instantiation\": {\"adopted\": true} (plus \"obligations\" for any you added) instead of copying this text back; it is attached for you."
 	second, err := Create(ctx, client, s.Execute, execBrief)
 	if err != nil {
 		return out, fmt.Errorf("create execution session: %w", err)
@@ -70,10 +72,9 @@ func (s Staged) Run(ctx context.Context, client anthropic.Client, brief string) 
 	}
 	rep.Normalize()
 	// The report carries the instantiation the senior reviewer wrote, so
-	// the reader sees the judgment and the evidence side by side.
-	if rep.Instantiation.WorstCase == "" {
-		rep.Instantiation = *in
-	}
+	// the reader sees the judgment and the evidence side by side; the
+	// executor did not spend output tokens copying it.
+	rep.Adopt(*in)
 	out.Report = rep
 	return out, nil
 }

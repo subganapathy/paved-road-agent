@@ -102,9 +102,33 @@ func (in *Instantiation) Render() string {
 
 // Instantiation is the lead's first move, written down.
 type Instantiation struct {
-	WorstCase       string       `json:"worst_case"`
-	Proportionality string       `json:"proportionality"`
-	Obligations     []Obligation `json:"obligations"`
+	WorstCase       string       `json:"worst_case,omitempty"`
+	Proportionality string       `json:"proportionality,omitempty"`
+	Obligations     []Obligation `json:"obligations,omitempty"`
+	// Adopted is set by an executor that was given the instantiation and
+	// did not copy it back; the caller attaches the original. Any
+	// obligations present alongside it are the executor's additions.
+	Adopted bool `json:"adopted,omitempty"`
+}
+
+// Adopt attaches the instantiation the executor was given, keeping any
+// obligations it added.
+func (r *Report) Adopt(in Instantiation) {
+	added := r.Instantiation.Obligations
+	r.Instantiation = in
+	r.Instantiation.Adopted = false
+	for _, o := range added {
+		dup := false
+		for _, have := range in.Obligations {
+			if have.Property == o.Property && have.Establish == o.Establish {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			r.Instantiation.Obligations = append(r.Instantiation.Obligations, o)
+		}
+	}
 }
 
 // StackLine is one discovered binding line with its evidence.

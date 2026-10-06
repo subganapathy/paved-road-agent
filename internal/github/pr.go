@@ -124,13 +124,14 @@ func (c *Client) Load(ctx context.Context, pr PR) (*Loaded, error) {
 		}
 		for _, f := range files {
 			cf := change.File{Path: f.Filename, Status: status(f.Status), Patch: f.Patch}
-			if semantic(f.Filename) {
-				if f.Status != "added" {
-					cf.Before, _ = c.contents(ctx, repo, f.Filename, meta.Base.SHA)
-				}
-				if f.Status != "removed" {
-					cf.After, _ = c.contents(ctx, repo, f.Filename, meta.Head.SHA)
-				}
+			// Whole files: both sides for the ones rules classify, and the
+			// head side of the first few of any kind, so the brief can show
+			// the reviewer the code around the diff without a tool call.
+			if semantic(f.Filename) && f.Status != "added" {
+				cf.Before, _ = c.contents(ctx, repo, f.Filename, meta.Base.SHA)
+			}
+			if f.Status != "removed" && (semantic(f.Filename) || len(out.Change.Files) < WholeFiles) {
+				cf.After, _ = c.contents(ctx, repo, f.Filename, meta.Head.SHA)
 			}
 			out.Change.Files = append(out.Change.Files, cf)
 		}
@@ -166,6 +167,10 @@ func semantic(p string) bool {
 	}
 	return false
 }
+
+// WholeFiles is how many changed files are fetched whole at the head, in
+// PR order, for the brief.
+const WholeFiles = 12
 
 // Contents returns one file at a ref, for callers outside the package.
 func (c *Client) Contents(ctx context.Context, owner, repo, p, ref string) (string, error) {
