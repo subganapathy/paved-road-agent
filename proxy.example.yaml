@@ -3,14 +3,13 @@
 #   none | env:NAME | keychain:SERVICE   (keychain = the operator's macOS Keychain, laptop only)
 # Copy to proxy.yaml (gitignored) and fill in.
 
-listen: ":8080"
+listen: "127.0.0.1:8471"              # an explicit address; ":8080" can land on IPv6 only when another process holds IPv4
 token: keychain:paved-agent-proxy        # the bearer the sandbox presents to the proxy
 
 fleet:
   cluster_label: cluster                 # the metric label that names a cluster
   clusters:
-    - {id: e1-dev,  env: dev}
-    - {id: e1-prod, env: prod}
+    - {id: e1-dev, env: dev}               # the sgrpc kind cluster runs the dev overlay
 
 slots:
   metrics:
@@ -34,7 +33,7 @@ agent:
   workspace_id: ""                       # wrkspc_… from the Console URL, unless the key is workspace-scoped
   environment_id: ""                     # filled in after `change-agent setup`
   environment_key: keychain:paved-agent-env-key   # created in the Console for the self-hosted environment
-  proxy: http://127.0.0.1:8080           # where the worker reaches the proxy
+  proxy: http://127.0.0.1:8471           # where the worker reaches the proxy
   workdir: /tmp/paved-road-agent/work
   budget_usd: 3
 

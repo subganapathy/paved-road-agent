@@ -16,7 +16,7 @@ import (
 
 // Config is proxy.yaml: bound once at install time, inside the boundary.
 type Config struct {
-	Listen string `yaml:"listen"` // default :8080
+	Listen string `yaml:"listen"` // default 127.0.0.1:8471 (an explicit address: ":8080" can silently bind only IPv6 when another process holds IPv4)
 	Fleet  Fleet  `yaml:"fleet"`
 	Slots  Slots  `yaml:"slots"`
 	Limits Limits `yaml:"limits"`
@@ -86,7 +86,7 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) defaults() {
 	if c.Listen == "" {
-		c.Listen = ":8080"
+		c.Listen = "127.0.0.1:8471"
 	}
 	if c.Fleet.ClusterLabel == "" {
 		c.Fleet.ClusterLabel = "cluster"

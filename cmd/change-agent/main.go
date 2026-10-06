@@ -54,6 +54,8 @@ func main() {
 		err = runReview(ctx, os.Args[2:])
 	case "serve":
 		err = runServe(ctx, os.Args[2:])
+	case "trace":
+		err = runTrace(ctx, os.Args[2:])
 	default:
 		usage()
 	}
@@ -431,6 +433,28 @@ func runReview(ctx context.Context, args []string) error {
 		return os.WriteFile(*out, append(b, '\n'), 0o644)
 	}
 	return nil
+}
+
+// ---- trace ----------------------------------------------------------------
+
+func runTrace(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("trace", flag.ExitOnError)
+	cfgPath := fs.String("config", "proxy.yaml", "configuration file")
+	id := fs.String("session", "", "session id")
+	width := fs.Int("width", 300, "truncate each line to this many characters")
+	fs.Parse(args)
+	if *id == "" {
+		return errors.New("--session is required")
+	}
+	a, err := loadAgentConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	client, err := anthropicClient(a)
+	if err != nil {
+		return err
+	}
+	return session.Trace(ctx, client, *id, os.Stdout, *width)
 }
 
 // ---- serve ----------------------------------------------------------------

@@ -1,0 +1,331 @@
+verdict: WARNING
+Ships, with eyes open. The grant itself is correct and least-privilege: the generated principal cluster.local/ns/frontend/sa/frontend, the namespace label and the pod label app=frontend all match frontend exactly — confirmed both in its manifests and live in the mesh — the path is the only method on the proto and exactly what frontend declared in egress, all 38 platform-owned files verify against the stamp, the data is a name string over STRICT mTLS, and three new end-to-end checks prove reach, identity-based denial and survival of a node drain in a real Istio kind cluster. Two things should be seen before merging. First, this pull request is not the gate it appears to be: both objects are already live in e1-prod and frontend is already calling successfully at about 6 rps, which contradicts the description's "until then frontend's calls are denied" and means the access was granted ahead of review — and with no argocd_* metrics I could not establish what that cluster is reconciling. Second, nothing is watching: the metrics backend evaluates zero alert rules, so a failure of this grant would be silent, and hello runs a single replica with a ceiling of 2 in the cluster labelled prod against a prod overlay declaring 3 and 3/10. Load is a non-issue — four orders of magnitude of headroom against an O(1) handler. Four yes/no questions are attached, and a .paved-agent/discover.yaml is proposed since none existed.
+
+worst case: hello is an internal gRPC service that today nobody may call: its only AuthorizationPolicy is `allow-nothing` (spec: {}), so every caller is denied. This change opens exactly one method, /hello.v1.HelloService/Hello, to exactly one mTLS identity. Worst case if the generated identifiers are wrong: frontend's calls are denied and frontend's end-to-end test fails — no user-visible failure, because frontend serves no inbound traffic (sum(rate(istio_requests_total{destination_service_namespace="frontend"}[1h])) returns no data) and neither service is reachable from outside the cluster (only ClusterIP Services; no ingress gateway anywhere in the fleet). Worst case if they are too broad: an unintended workload inside namespace frontend gains the right to call one side-effect-free method whose request is a name string and whose response is "hello <name>" — no credentials, no financial or health data. Worst case if hello cannot carry the load: hello runs ONE ready replica in the only observable cluster with a KEDA ceiling of 2, so a traffic spike sheds with RESOURCE_EXHAUSTED; the only thing degraded is frontend. The blast radius is one request path on an internal service with no human users behind it, so the bar is reduced — except for correct, available and secure, which the properties hold at full regardless because this is a manifest change that grants access. (reduced proof)
+
+stack:
+  mesh:       Istio 1.31.1, sidecar injection, STRICT mTLS enforced
+  admission:  Pod Security admission at enforce=restricted; the only webhooks are Istio's and KEDA's — no Gatekeeper, no Kyverno, no general policy engine
+  autoscaler: KEDA, scaling the Rollout on sum(vikrant_inflight_rpcs) via a generated HPA
+  metrics:    Prometheus-compatible, scraping kube-state-metrics, Envoy sidecar stats and the service's own vikrant_* instrumentation
+
+properties:
+  correct                  warning  Every identifier the generated policies rely on — principal, namespace label, pod label, method path, port — is confirmed true against frontend as declared and as deployed, and the stamp proves the files are genuine platform renders; but the PR's claim that "until then frontend's calls are denied" is false in e1-prod, where both objects already exist and frontend is already calling successfully.
+  reversible               info     Purely additive and declarative: two new objects and one kustomization entry, no data written, no contract, stored format or configuration schema touched, and a revert prunes both objects and restores deny-all with nothing left behind.
+  within_budget            info     The measured load is 6.2 rps against an O(1) in-memory handler with a per-pod admission ceiling of 2000 in-flight unary RPCs and a KEDA scale threshold of 200 — roughly four orders of magnitude of headroom even with the mesh's 3x retry amplification.
+  stable_under_failure     info     The newly reachable path carries a 10s client deadline capped at 30s server-side, retries exist in exactly one layer (the mesh, 2 attempts, only for this idempotent method), overload sheds with RESOURCE_EXHAUSTED which is not in the retryOn list, and the handler's work is independent of its input.
+  progressively_delivered  warning  deploy/base is shared by every overlay, so merging changes dev and prod with no judged stage between them; the declared staging rung has no cluster in the fleet; and in e1-prod the change is already live ahead of the merge, so no gate applied at all.
+  available                warning  The change touches nothing of the workload's shape and both objects will be admitted, but it gives hello its first real caller while hello actually runs a single replica with a ceiling of 2 in the cluster labelled prod, against a prod overlay that declares 3 replicas and a ceiling of 10.
+  secure                   warning  The path carries no sensitive data, is mTLS-encrypted with the peer identity verified, and is scoped to one method — but the effective subject is the service account `frontend`, which a second workload in that namespace (the `traffic` load generator) also runs as, and that workload is the one actually calling hello today.
+  observable               warning  The newly reachable path is well instrumented by count, latency, code, in-flight and RBAC-denial counters that all exist today, but the metrics backend evaluates zero alert rules, so no failure of this grant would tell anyone.
+  proven                   info     The change adds three end-to-end checks that exercise exactly the new behaviour in a real Istio mesh in kind — the authorized identity reaches the method, a wrong identity in the same namespace is refused with PermissionDenied, and calls survive a node drain — and CI runs them on every push to this pull request.
+
+[info] correct (confidence 0.95)
+  Every identifier the two generated policies depend on is true where the code runs: frontend's pod template sets serviceAccountName: frontend in namespace frontend with labels exactly {app: frontend}, and its live pods present source_principal="spiffe://cluster.local/ns/frontend/sa/frontend" — exactly the principal the AuthorizationPolicy grants.
+  evidence (config): org-finder, smallStepGiantLeap/frontend deploy/base/namespace.yaml:12-19 and deploy/base/rollout.yaml spec.template.spec.serviceAccountName = ServiceAccount name: frontend, namespace: frontend; pod template serviceAccountName: frontend
+  evidence (config): org-finder, smallStepGiantLeap/frontend deploy/base/rollout.yaml spec.template.metadata.labels = {app: frontend} — the only label, matching the NetworkPolicy podSelector
+  evidence (metric): topology discoverer (Prometheus) kube_pod_service_account{namespace="frontend"} and kube_pod_labels{namespace="frontend"} = pods frontend-74c865bd5d-5fcps and traffic-77dc778c66-9h6f5, both service_account="frontend", both label_app="frontend"
+  evidence (metric): topology discoverer (Prometheus) kube_namespace_labels{namespace="frontend"} = label_kubernetes_io_metadata_name="frontend" present — the namespaceSelector matches
+  evidence (metric): topology discoverer (Prometheus) istio_requests_total{destination_service_namespace="hello"} source_principal = spiffe://cluster.local/ns/frontend/sa/frontend
+  recommend: No change: the generated principal, namespace selector and pod selector are confirmed against both frontend's manifests and its running pods.
+
+[info] correct (confidence 0.95)
+  The granted path matches the contract on both sides exactly: hello's proto declares rpc Hello in package hello.v1 service HelloService, and frontend's service.yaml egress requests precisely [hello.v1.HelloService/Hello] with no wildcard and no wider method set.
+  evidence (diff): proto/hello/v1/hello.proto package hello.v1; service HelloService { rpc Hello(...) option idempotency_level = NO_SIDE_EFFECTS; } = the only method on the service; path /hello.v1.HelloService/Hello
+  evidence (config): org-finder, smallStepGiantLeap/frontend service.yaml spec.egress = two entries: smallStepGiantLeap/echo [echo.v1.EchoService/Echo] and smallStepGiantLeap/hello [hello.v1.HelloService/Hello]
+  evidence (diff): service.yaml spec.authorizedCallers = - service: smallStepGiantLeap/frontend, methods: [hello.v1.HelloService/Hello]
+  recommend: No change: the grant is exactly the method the caller asked for, and no more.
+
+[info] correct (confidence 0.85)
+  The path-scoped rule is actually enforced rather than silently ignored, because the Service declares appProtocol: grpc on port 50051 and the container port is named grpc — had the port not been identified as HTTP/2, Istio would ignore `paths` and the policy would allow frontend every method on the port.
+  evidence (config): deploy/base/services.yaml spec.ports[0] = appProtocol: grpc, name: grpc, port: 50051, targetPort: grpc
+  evidence (config): deploy/base/rollout.yaml containers[0].ports = containerPort 50051 name grpc; containerPort 9090 name metrics
+  evidence (metric): topology discoverer (Prometheus) envoy_http_rbac{namespace="hello",http_conn_manager_prefix="inbound_0.0.0.0_50051"} = an HTTP connection manager with an RBAC filter exists on the 50051 inbound listener — the port is treated as HTTP, so path matching app...
+  recommend: No change. Worth knowing as a standing property of this generator: the method-scoping of every authorizedCallers grant depends on the port keeping appProtocol: grpc.
+
+[info] correct (confidence 0.95)
+  All 38 platform-owned files hash exactly to .platform/sha256sums at this head, including the two new policy files and the regenerated service.yaml, so CI's check-stamp will report current=true and the generated artifacts are genuine vikrant renders rather than hand edits.
+  evidence (config): bash sha256sum --check sha256sum --check .platform/sha256sums (run in the mounted repo at 9050549d2e78) = 38 of 38 files OK, including deploy/base/mesh/authz-allow-frontend.yaml = c25e841a…, deploy/base/network/allow-from-frontend.yaml = f25...
+  evidence (config): .platform/check-stamp.sh lines 25-33 = if the inputs match the stamp and all files match, echo current=true; otherwise a hand edit fails the build
+  evidence (config): .github/workflows/ci.yaml jobs.e2e.if = needs.test.outputs.current == 'true' — e2e and publish only run on a non-superseded commit
+  recommend: No change: the intent in service.yaml and its rendered effect are consistent and gated.
+
+[warning] correct (confidence 0.80)
+  The description says "until then frontend's calls are denied", but in e1-prod the NetworkPolicy allow-from-frontend already exists as a live object and frontend is already calling /hello.v1.HelloService/Hello successfully at roughly 1.70 rps to hello plus 1.47 rps to hello-canary, all response_code=200 — the cluster is running the effect of this pull request before it has been merged into main.
+  evidence (metric): topology discoverer (Prometheus) kube_networkpolicy_spec_ingress_rules{namespace="hello"} = three policies present: default-deny (0 rules), allow-platform (1), allow-from-frontend (1) — the last is the object this PR adds
+  evidence (metric): topology discoverer (Prometheus) sum(rate(istio_requests_total{source_workload_namespace="frontend"}[1h])) by (destination_service_name, response_code) = hello ≈ 1.70/s and hello-canary ≈ 1.47/s, both response_code="200"
+  evidence (metric): topology discoverer (Prometheus) sum(rate(istio_requests_total{destination_service_namespace="hello"}[5m])) by (source_workload) = ≈ 6.2 req/s from source_workload="traffic", response_flags="-"
+  evidence (diff): scm_pr body PR description = "Until then frontend's calls are denied, and its end-to-end test reports them as awaiting access."
+  recommend: Establish why e1-prod already has these objects: either Argo CD is tracking this branch rather than main, or they were applied out of band. Until that is known, the pull request is not the gate it appears to be — reviewing it cannot prevent the access, only document it. Confirm the Argo CD Application's targetRevision for hello and record it in .paved-agent/discover.yaml.
+
+[info] reversible (confidence 0.90)
+  Nothing in the change is a one-way door: it adds two Kubernetes objects and one kustomization entry, writes no data, changes no proto contract, no stored format and no configuration schema, and old and new hello pods are byte-identical in behaviour because a namespace-scoped policy is interpreted by Envoy and the CNI, not by the application.
+  evidence (diff): scm_pr the six changed files = two added policy manifests, one kustomization list insertion, three new e2e assertions, the service.yaml declaration, and the stamp; prot...
+  evidence (diff): deploy/base/kustomization.yaml resources = two entries added to a sorted list; no entry removed or renamed
+  evidence (config): deploy/base/mesh/authz-allow-nothing.yaml spec = spec: {} — an ALLOW policy with no rules remains in place, so removing allow-frontend returns the namespace to deny-all with no further...
+  recommend: No change. Note for later, not for this merge: once frontend's Home handler actually calls hello, reverting this commit becomes a breaking change for frontend rather than a no-op, so the revert window is widest now.
+
+[info] within_budget (confidence 0.85)
+  At the measured 6.2 rps, and even at the 18.6 rps the mesh's 2 retry attempts could produce if hello began returning UNAVAILABLE, in-flight work stays near 0.2 against a KEDA scale-out threshold of 200 and a per-pod admission ceiling of 2000 concurrent unary RPCs — the handler is a single string concatenation with no downstream call and no fan-out.
+  evidence (metric): topology discoverer (Prometheus) sum(rate(istio_requests_total{destination_service_namespace="hello"}[5m])) by (source_workload) = ≈ 6.2 req/s, the only caller
+  evidence (code): internal/handlers/hello_service.go func (s *HelloService) Hello = return &hellov1.HelloResponse{Message: "hello " + req.GetName()}, nil — O(1), no I/O, no loop
+  evidence (config): internal/platform/server/options.go Defaults() = MaxInflightUnary: 2000, MaxInflightStreams: 4000, MaxRecvMsgSize/MaxSendMsgSize 4 MiB
+  evidence (config): deploy/base/autoscaling.yaml spec.triggers[0] = prometheus query sum(vikrant_inflight_rpcs{namespace="hello"}), threshold 200
+  evidence (metric): topology discoverer (Prometheus) vikrant_inflight_rpcs{namespace="hello"} = 0 for both type=unary and type=stream at query time
+  evidence (config): org-finder, smallStepGiantLeap/frontend grep -rni hello over all .go files, go.mod, go.sum = zero matches; the only handler, FrontendService.Home, returns Unimplemented — so there is no call site and therefore no per-request mul...
+  recommend: No change. The one number I could not get is headroom against the 512Mi memory limit, because this backend exports no cAdvisor family — see unknowns.
+
+[info] stable_under_failure (confidence 0.90)
+  The newly reachable path cannot sustain a failure: retries exist in exactly one layer (the mesh, 2 attempts on connect-failure/refused-stream/unavailable, applied only to this method because the proto marks it NO_SIDE_EFFECTS), the canonical client deliberately adds none, overload sheds with RESOURCE_EXHAUSTED which is absent from the retryOn list and so is never retried, and every unary call carries a 10s deadline capped at 30s by the server.
+  evidence (config): deploy/base/mesh/virtual-service.yaml http[0] name: idempotent = match uri regex (/hello\.v1\.HelloService/Hello), retries: attempts 2, retryOn connect-failure,refused-stream,unavailable
+  evidence (code): client/client.go package doc and ServiceConfig = "No retry policy here. Retries happen once, in the mesh… Retrying in both places would multiply attempts."; methodConfig timeout "10s" ...
+  evidence (code): internal/platform/server/interceptors.go admission.unary and capDeadline = returns codes.ResourceExhausted "server at unary concurrency limit" past MaxInflightUnary, counting vikrant_rejected_total; capDeadline b...
+  evidence (config): deploy/base/mesh/destination-rules.yaml trafficPolicy.connectionPool.http.maxRetries = 10 — concurrent retries into hello are bounded
+  evidence (code): internal/platform/server/interceptors.go exempt() = health and reflection bypass admission, so shedding cannot mark the pod not-ready and cascade
+  recommend: No change. Note that hello has no per-caller rate limit, so frontend can consume the whole admission budget — acceptable because frontend is the only authorized caller and there is nobody to starve.
+
+[warning] progressively_delivered (confidence 0.90)
+  The environment provides real staged delivery for images — Argo Rollouts canary at 10% then 50% with an AnalysisTemplate failing above a 1% server-error ratio, plus a dev→staging→prod promote workflow — but none of it applies to this change: both new objects live in deploy/base, which all three overlays include, so a merge to main reaches dev and prod at once with no automatic judgment and no stage between them.
+  evidence (config): deploy/envs/dev/kustomization.yaml, deploy/envs/prod/kustomization.yaml resources = both are `- ../../base`; the overlays patch only Rollout replicas, canary steps and ScaledObject bounds — never policy
+  evidence (config): deploy/base/rollout.yaml spec.strategy.canary.analysis = AnalysisTemplate server-errors, failureLimit 1, keyed on rollouts_pod_template_hash — it judges pod-template revisions, so a NetworkPol...
+  evidence (doc): README.md "Environments differ only in scale and rollout pace; security and the call graph are the same everywhere." = the platform states by design that access is not staged per environment; service.yaml has no per-environment access list
+  evidence (config): .github/workflows/promote.yaml the promote job = copies only deploy/envs/<env>/image.yaml — the image digest is the only thing that moves between environments
+  recommend: Accept for this change — the worst case is one method on an internal service with no external exposure and no user-facing caller — but recognise the general shape: on this platform every access grant is an unstaged, fleet-wide change. If the platform is to stage access, the lever is a per-environment access list in service.yaml; there is none today.
+
+[warning] progressively_delivered (confidence 0.90)
+  The declared dev→staging→prod ladder has a missing rung: the repository ships a deploy/envs/staging overlay and the promote workflow offers staging as a target, but the fleet knows only two clusters, e1-dev and e1-prod, so there is no staging environment for a change to pass through.
+  evidence (metric): fleet fleet() = {"cluster_label":"cluster","clusters":[{"id":"e1-dev","env":"dev"},{"id":"e1-prod","env":"prod"}]}
+  evidence (config): deploy/envs/staging/kustomization.yaml the whole file = a full overlay: replicas 2, canary steps with 30s pauses, ScaledObject min 2 max 10
+  evidence (metric): topology discoverer (Prometheus) metrics_label_values(label="cluster") = ["e1-prod"] only — and up{cluster="e1-dev"} returns no data, so even dev is unmeasured
+  recommend: Decide whether staging exists. If it does not, the overlay and the promote choice are misleading and the real ladder is dev→prod; if it should, register its cluster. Either way record the answer in .paved-agent/discover.yaml so the next review knows how many stages a change really passes through.
+
+[info] available (confidence 0.90)
+  The change touches no part of the workload's shape — no pod template, probe, resource, PDB or security context — and both objects use API versions the installed stack serves (security.istio.io/v1 under istiod 1.31.1, networking.k8s.io/v1), so admission will accept them; CI proves this by applying every overlay with a server-side dry run.
+  evidence (diff): scm_pr files changed = no change to deploy/base/rollout.yaml, pdb.yaml, namespace.yaml or any security context
+  evidence (config): e2e/run.sh the "environments" assertion block = for env in deploy/envs/*/: assert "deploy/envs/<env> is accepted by the API server (server-side dry run)" -- k apply -k "$env" --dry-run=...
+  evidence (config): Makefile the manifests target = kubectl kustomize each overlay must build, so a dangling resources entry fails in CI, not at deploy time
+  evidence (metric): topology discoverer (Prometheus) kube_validatingwebhookconfiguration_info, kube_mutatingwebhookconfiguration_info = only istio-validator-istio-system, istiod-default-validator, istio-sidecar-injector, istio-revision-tag-default, keda-admission — no po...
+  recommend: No change.
+
+[warning] available (confidence 0.85)
+  This grant gives hello its first real caller while hello runs a single ready replica in the cluster labelled prod with a KEDA ceiling of 2 — against a prod overlay that declares 3 replicas and a ceiling of 3/10 — and its PodDisruptionBudget reports expected_pods 1 with maxUnavailable 1, so a single node drain can remove the only replica serving frontend.
+  evidence (metric): topology discoverer (Prometheus) kube_pod_status_ready{namespace="hello",condition="true"} = 1 series: pod hello-67b4ff486c-kb28h; all other ReplicaSets at spec_replicas=0
+  evidence (metric): topology discoverer (Prometheus) kube_horizontalpodautoscaler_spec_min_replicas / _max_replicas {namespace="hello"} = min=1, max=2, current=1 — matching the dev overlay's KEDA patch, not prod's
+  evidence (config): deploy/envs/prod/kustomization.yaml the two JSON patches = Rollout /spec/replicas → 3; ScaledObject minReplicaCount → 3, maxReplicaCount → 10
+  evidence (metric): topology discoverer (Prometheus) kube_poddisruptionbudget_status_current_healthy / _status_expected_pods {namespace="hello"} = current_healthy=1, expected_pods=1
+  evidence (metric): topology discoverer (Prometheus) kube_node_info = a 3-node kind cluster (sgrpc-control-plane, sgrpc-worker, sgrpc-worker2) with no topology.kubernetes.io/zone label, so the Rollout's zone...
+  recommend: Reconcile the cluster labelled prod with deploy/envs/prod, or correct the label if e1-prod is not really running the prod overlay. The change itself is not the cause, but it is what makes the drift matter: until now nothing called hello, so a single replica cost nothing.
+
+[info] secure (confidence 0.90)
+  The data on the newly opened path is a name string in and a greeting string out — no credentials, financial, health or identifier data — carried over mTLS with the peer's identity verified, and the grant is scoped to a single method rather than to the whole workload.
+  evidence (code): proto/hello/v1/hello.proto message HelloRequest / HelloResponse = HelloRequest{string name = 1}; HelloResponse{string message = 1}
+  evidence (config): deploy/base/mesh/peer-authentication.yaml spec.mtls.mode = STRICT
+  evidence (metric): topology discoverer (Prometheus) istio_requests_total{destination_service_namespace="hello"} = every series carries connection_security_policy="mutual_tls" — functional confirmation that STRICT is in force
+  evidence (diff): deploy/base/mesh/authz-allow-frontend.yaml spec.rules[0].to.operation.paths = exactly [/hello.v1.HelloService/Hello]; hello's registered reflection service and health service remain denied by allow-nothing
+  evidence (config): deploy/base/namespace.yaml ServiceAccount hello = automountServiceAccountToken: false; no cloud credential or secret is granted by this change
+  recommend: No change: method-scoped, identity-bound and encrypted is the right shape for this grant.
+
+[warning] secure (confidence 0.85)
+  service.yaml declares the caller as the service "smallStepGiantLeap/frontend", but what is actually granted is "anything in namespace frontend running as service account frontend with label app=frontend" — and a second workload already satisfies that: a plain Deployment named `traffic`, a load generator that is not the frontend Rollout, shares both the service account and the label and is the source of all current calls to hello.
+  evidence (metric): topology discoverer (Prometheus) kube_pod_service_account{namespace="frontend"} and kube_pod_labels{namespace="frontend"} = two pods: frontend-74c865bd5d-5fcps (owned by Rollout frontend) and traffic-77dc778c66-9h6f5 (owned by Deployment traffic); both service_...
+  evidence (metric): topology discoverer (Prometheus) sum(rate(istio_requests_total{destination_service_namespace="hello"}[5m])) by (source_workload) = the only source_workload is "traffic" — not the frontend application itself
+  evidence (metric): topology discoverer (Prometheus) kube_replicaset_owner{namespace="frontend"} = Rollout frontend owns the app pods; `traffic` is a separate Deployment, outside the Rollout the platform renders
+  evidence (config): org-finder, smallStepGiantLeap/frontend deploy/ tree = no manifest for a `traffic` workload exists in frontend's repository — it is not part of what the platform renders
+  recommend: Decide whether `traffic` is meant to hold frontend's identity. Mesh identity has no finer grain than the service account, so if the answer is no, the fix is in the frontend namespace — give the load generator its own service account and its own grant — not in this policy. Record the decision in .paved-agent/discover.yaml so the next review does not re-raise it.
+
+[info] observable (confidence 0.85)
+  The newly reachable path needs no new instrumentation and has none missing: hello already emits per-method count by code, per-method latency, in-flight gauges, rejection counts and build info, and all of these families exist in the backend with namespace="hello" series, while Envoy adds istio_requests_total with source_principal and envoy_http_rbac with authz_enforce_result so an authorization failure is distinguishable from an application failure.
+  evidence (code): internal/platform/metrics/metrics.go NewServer = vikrant_rpcs_handled_total{method,type,code}, vikrant_unary_latency_seconds{method,code}, vikrant_inflight_rpcs{type}, vikrant_rejected_t...
+  evidence (metric): topology discoverer (Prometheus) the backend's __name__ list, filtered to vikrant_* = all five families exist; vikrant_build_info{namespace="hello"}=version "dev", vikrant_rpcs_handled_total{namespace="hello",code="OK"} has...
+  evidence (metric): topology discoverer (Prometheus) envoy_http_rbac{namespace="hello",http_conn_manager_prefix="inbound_0.0.0.0_50051"} = authz_enforce_result="denied" = 750 cumulative — denials are counted and visible
+  evidence (code): cmd/hello/main.go tracing.Setup and otelgrpc server handler = W3C trace context is propagated in and out, with health checks filtered out of traces
+  recommend: No change to instrumentation.
+
+[warning] observable (confidence 0.95)
+  No alert anywhere watches any of those signals: the metrics backend evaluates zero rule groups, so if this grant is wrong — frontend denied, hello erroring, hello shedding, or the policy silently removed — nothing fires, and the first sign would be a human reading a dashboard.
+  evidence (metric): metrics_rules metrics_rules() = {"status":"success","data":{"groups":[]}} — no alerting rules and no recording rules exist
+  evidence (metric): topology discoverer (Prometheus) ALERTS{namespace=~"hello|frontend"} = no data
+  evidence (config): deploy/base/rollout.yaml AnalysisTemplate server-errors = the one piece of automatic judgment queries Prometheus directly during a canary; it does not exist as a rule and does not watch steady st...
+  recommend: Add one rule for the signal this change creates: a non-zero rate of envoy_http_rbac authz_enforce_result="denied" on hello's 50051 listener, or a non-OK ratio on vikrant_rpcs_handled_total{namespace="hello"}. Keeping it in source control alongside deploy/base would also give the next reviewer something to point at. Warning rather than blocking only because the worst case here reaches no users.
+
+[info] proven (confidence 0.90)
+  The change proves itself in a real mesh: it adds three end-to-end checks — the authorized identity reaches the method, a pod in namespace frontend wearing app=frontend but a different service account is refused with exactly PermissionDenied, and 60s of continuous calls survive a node drain with failed=0 — and the declared check count is updated from 13 to 16, which matches the 16 checks the script actually runs.
+  evidence (diff): e2e/run.sh the three added check lines = check reach "frontend is authorized…"; check deny "…passes NetworkPolicy; Istio denies it by identity"; ATTEMPTS=1 check no-errors "f...
+  evidence (diff): e2e/run.sh the replaced skip line = the previous `skip "no caller is granted a unary method of $NAME, so there is no traffic to keep up during a node drain"` is now a real c...
+  evidence (config): bash, counting checks in e2e/run.sh 3 pod-security + 3 overlays + 3 callers + 2 egress + 4 rollout/autoscaling + 1 drain = 16, matching the updated $((6 + 7 + 3)); the previous total was 13 = $((3 + 7 + 3))
+  evidence (config): e2e/run.sh matches() the deny matcher = deny requires exactly "CODE PermissionDenied" — so the impostor check proves the NetworkPolicy admitted the pod and Istio refused it on...
+  evidence (config): .github/workflows/ci.yaml on: [push, pull_request] and the e2e job = e2e runs for this pull request in a kind cluster with Istio 1.31.1, Argo Rollouts, KEDA and Prometheus, gated on check-stamp reporting cu...
+  recommend: No change. One limitation worth knowing: the e2e creates the frontend namespace, service account and label itself, from the same service.yaml that generated the policy, so it proves the policies are self-consistent rather than that they match the real frontend. That external match is what discovery established independently — see the first correct finding.
+
+[info] proven (confidence 0.80)
+  The pre-existing `blocked` matcher accepts PermissionDenied, Unavailable or DeadlineExceeded, so the neighbouring assertion "a namespace not in ingress is stopped by NetworkPolicy before it reaches the mesh" would also pass if the NetworkPolicy were not enforced at all and only Istio denied the call — the assertion's wording is stronger than what it verifies.
+  evidence (config): e2e/run.sh matches() case blocked = [[ "$2" =~ ^CODE\ (PermissionDenied|Unavailable|DeadlineExceeded) ]]
+  evidence (config): e2e/run.sh the intruder check = check blocked "a namespace not in ingress is stopped by NetworkPolicy before it reaches the mesh"
+  recommend: Not introduced by this change and not worth blocking on, since the newly added deny check does require exactly PermissionDenied. If the platform wants the network layer proven separately, the intruder check needs a matcher that excludes PermissionDenied.
+
+unknown: Why e1-prod already runs the two objects this pull request adds, and what Argo CD is actually reconciling for hello — which branch or revision, and whether hello and frontend are registered Applications at all. (blocks correct, progressively_delivered, reversible); tried: metrics_rules() and the backend's full __name__ list: no argocd_* metric family exists, so sync and drift status cannot be read; looked for argocd/hello.yaml in the hello repository at 9050549d2e78: 404; no Application or ApplicationSet manifest found in the repository
+
+unknown: Whether the cluster labelled prod is meant to run deploy/envs/prod. It runs 1 replica with a KEDA ceiling of 1/2, which is exactly the dev overlay's shape, on a 3-node kind cluster with no zone labels. (blocks available, within_budget, progressively_delivered); tried: kube_pod_status_ready, kube_replicaset_spec_replicas, kube_horizontalpodautoscaler_spec_min/max_replicas for namespace hello; compared against deploy/envs/{dev,prod}/kustomization.yaml; no argocd_* metrics to attribute the difference to a sync
+
+unknown: Anything at all about cluster e1-dev, and whether a staging environment exists. (blocks progressively_delivered, available); tried: fleet(): returns e1-dev and e1-prod only, no staging; metrics_label_values(cluster): returns ["e1-prod"] only; up{cluster="e1-dev"}: no data
+
+unknown: Whether the `traffic` Deployment in namespace frontend is an intended holder of frontend's mesh identity. It has no manifest in frontend's repository but carries service account frontend and label app=frontend, and generates all current traffic to hello. (blocks secure); tried: org finder searched frontend's deploy/ tree: no traffic workload manifest; kube_replicaset_owner{namespace="frontend"}: owned by a Deployment, not the Rollout
+
+unknown: Memory and CPU headroom for hello against its 512Mi limit and 100m request. (blocks within_budget); tried: the backend exports no container_cpu_usage_seconds_total and no container_memory_working_set_bytes; no cAdvisor or node metrics family exists in the __name__ list; kube_pod_container_resource_{requests,limits} gives the declared values only
+
+QUESTION q1 (blocks correct, progressively_delivered, reversible):
+  Is Argo CD reconciling hello's clusters from the `main` branch (so that merging this pull request is what actually grants the access)? Answer no if e1-prod is tracking this pull request's branch or if the policies were applied out of band — and if no, say which revision it tracks and where the Application manifest lives. Without this, `correct`, `progressively-delivered` and `reversible` stay unverified, because I measured both new objects already live in e1-prod with frontend calling successfully at ~6 rps while main does not contain them.
+  if yes → write to .paved-agent/discover.yaml:
+    # add under `answers:`
+      gitops_tracks_main:
+        question: q1
+        answer: yes
+        detail: Argo CD reconciles deploy/envs/<env> from the main branch for every cluster; objects observed in a cluster ahead of main are drift and should be reported as such.
+  if no → write to .paved-agent/discover.yaml:
+    # add under `answers:`
+      gitops_tracks_main:
+        question: q1
+        answer: no
+        detail: Argo CD does NOT reconcile these clusters from main.
+        target_revision: "<branch, tag or revision the Application tracks, e.g. access-request/frontend>"
+        application_manifest: "<repo and path holding the Argo CD Application/ApplicationSet, e.g. smallStepGiantLeap/platform:argocd/hello.yaml>"
+
+QUESTION q2 (blocks available, within_budget):
+  Is cluster e1-prod supposed to be running `deploy/envs/prod`? I measured 1 ready replica with a KEDA ceiling of 1/2, which matches the dev overlay, while deploy/envs/prod declares 3 replicas and a ceiling of 3/10 — and if no, say which overlay e1-prod runs. Without this, `available` and `within-budget` are graded against an unknown ceiling, and this change is what gives that single replica its first real caller.
+  if yes → write to .paved-agent/discover.yaml:
+    # add under `answers:`
+      e1_prod_runs_prod_overlay:
+        question: q2
+        answer: yes
+        detail: e1-prod runs deploy/envs/prod. The observed 1 replica and KEDA 1/2 ceiling are drift from the declared 3 replicas and 3/10 ceiling, and should be reconciled.
+  if no → write to .paved-agent/discover.yaml:
+    # add under `answers:`
+      e1_prod_runs_prod_overlay:
+        question: q2
+        answer: no
+        detail: e1-prod does not run deploy/envs/prod.
+        overlay_in_force: "<the overlay e1-prod actually syncs, e.g. deploy/envs/dev>"
+
+QUESTION q3 (blocks progressively_delivered):
+  Should there be a staging cluster? The repository ships a full `deploy/envs/staging` overlay and the promote workflow offers staging as a target, but the fleet knows only e1-dev and e1-prod — and if yes, say the cluster id. Without this, `progressively-delivered` cannot say how many judged stages a change passes through before prod.
+  if yes → write to .paved-agent/discover.yaml:
+    # add under `answers:`
+      staging_exists:
+        question: q3
+        answer: yes
+        detail: A staging environment exists and deploy/envs/staging is synced to it.
+        cluster_id: "<the staging cluster's id as the fleet names it>"
+  if no → write to .paved-agent/discover.yaml:
+    # add under `answers:`
+      staging_exists:
+        question: q3
+        answer: no
+        detail: There is no staging environment. The real delivery ladder is dev -> prod; deploy/envs/staging is rendered but unused, and the promote workflow's staging option leads nowhere.
+
+QUESTION q4 (blocks secure):
+  Is the `traffic` Deployment in namespace frontend intended to run as the `frontend` service account and therefore to hold frontend's mesh identity? It has no manifest in frontend's repository, yet it carries service account `frontend` and label `app=frontend`, so this grant admits it — and it is in fact the only workload calling hello today. If no, say which service account it should use. Without this, `secure` cannot confirm the grant's effective subject is no wider than the `smallStepGiantLeap/frontend` declared in service.yaml.
+  if yes → write to .paved-agent/discover.yaml:
+    # add under `answers:`
+      traffic_holds_frontend_identity:
+        question: q4
+        answer: yes
+        detail: The `traffic` load generator in namespace frontend is intended to run as service account frontend and share frontend's mesh identity. Grants to smallStepGiantLeap/frontend therefore admit it by design; this is accepted, not drift.
+  if no → write to .paved-agent/discover.yaml:
+    # add under `answers:`
+      traffic_holds_frontend_identity:
+        question: q4
+        answer: no
+        detail: The `traffic` load generator should not hold frontend's identity; it must get its own service account and its own grant.
+        intended_service_account: "<the service account traffic should run as, e.g. traffic>"
+
+PROPOSAL .paved-agent/discover.yaml (The repository had no .paved-agent/discover.yaml, so every identifier and every stack line in this review was derived from scratch. Recording them makes the next review cheaper and lets each line be re-verified by its check rather than re-discovered. The stack is named from what was found — Istio 1.31.1, Argo CD, Argo Rollouts, KEDA, Pod Security admission, a Prometheus-compatible backend with no rules — never assumed. The gaps (no staging cluster, no argocd_* metrics, no cAdvisor, no alert rules) are recorded as gaps rather than left blank, and the four open questions are keyed to the `answers:` block they will fill.):
+    # Identifiers and stack binding for smallStepGiantLeap/hello.
+    # Derived at review of pull request #1 (head 9050549d2e78); the repository had
+    # no such file. Identifiers only: no endpoints, hostnames or secrets.
+    # Each stack line carries a check that re-verifies it on the next run.
+    version: 1
+    
+    workloads:
+      hello:
+        namespace: hello
+        selector: app=hello
+        container: hello
+        kind: argoproj.io/v1alpha1/Rollout
+        name: hello
+        service_account: hello
+        principal: cluster.local/ns/hello/sa/hello
+        ports:
+          grpc: 50051
+          metrics: 9090
+        image: ghcr.io/smallstepgiantleap/hello
+        metric_families:
+          - vikrant_inflight_rpcs
+          - vikrant_rpcs_handled_total
+          - vikrant_unary_latency_seconds
+          - vikrant_rejected_total
+          - vikrant_build_info
+        environments:
+          dev:
+            overlay: deploy/envs/dev
+            clusters: [e1-dev]
+          staging:
+            overlay: deploy/envs/staging
+            clusters: []   # the overlay exists; the fleet knows no staging cluster (see q3)
+          prod:
+            overlay: deploy/envs/prod
+            clusters: [e1-prod]
+    
+    callers:
+      frontend:
+        repo: smallStepGiantLeap/frontend
+        namespace: frontend
+        selector: app=frontend
+        service_account: frontend
+        principal: cluster.local/ns/frontend/sa/frontend
+        methods:
+          - hello.v1.HelloService/Hello
+        note: >-
+          namespace frontend also runs a Deployment named `traffic` with the same
+          service account and the same app=frontend label; it is the source of all
+          observed calls to hello. See q4.
+    
+    stack:
+      mesh:
+        is: istio 1.31.1, sidecar injection, STRICT mTLS
+        check: >-
+          istio_build{component="pilot"} reports tag 1.31.1 and every
+          istio_requests_total{destination_service_namespace="hello"} series
+          carries connection_security_policy="mutual_tls"
+      gitops:
+        is: argo-cd, control plane in namespace argocd
+        check: kube_pod_info{namespace="argocd"} returns a running argocd-application-controller pod
+        unknown: >-
+          no argocd_* metric family is exported and no Application manifest was
+          found in this repository, so the tracked revision is unverified. See q1.
+      progressive_delivery:
+        is: argo-rollouts, canary with an AnalysisTemplate on server-error ratio
+        check: kube_replicaset_owner{namespace="hello"} returns owner_kind="Rollout", owner_name="hello"
+        note: >-
+          applies to pod-template revisions only; policy and access changes in
+          deploy/base reach every environment at once.
+      autoscaler:
+        is: keda, ScaledObject hello scaling the Rollout on sum(vikrant_inflight_rpcs)
+        check: kube_horizontalpodautoscaler_info{namespace="hello",horizontalpodautoscaler="keda-hpa-hello"} exists
+      admission:
+        is: pod security admission at enforce=restricted; webhooks are istio and keda only, no general policy engine
+        check: kube_namespace_labels{namespace="hello"} carries label_pod_security_kubernetes_io_enforce="restricted"
+      network_policy:
+        is: plain kubernetes NetworkPolicy
+        check: kube_networkpolicy_spec_ingress_rules{namespace="hello",networkpolicy="default-deny"} exists
+      metrics:
+        is: prometheus-compatible, scraping kube-state-metrics, envoy sidecar stats and the service's vikrant_* instrumentation
+        check: vikrant_build_info{namespace="hello"} returns a series
+        gap: no cAdvisor family exists, so container CPU and memory usage cannot be measured
+      alerting:
+        is: none
+        check: metrics_rules() returns an empty groups list
+    
+    documents:
+      - README.md
+    
+    answers: {}

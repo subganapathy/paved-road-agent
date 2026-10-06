@@ -45,7 +45,7 @@ scrape_configs:
       - source_labels: [__meta_kubernetes_pod_node_name]
         target_label: node
       - target_label: cluster
-        replacement: e1-prod
+        replacement: e1-dev
   - job_name: kube-state-metrics
     honor_labels: true
     kubernetes_sd_configs:
@@ -59,4 +59,4 @@ scrape_configs:
         regex: "8080"
         action: keep
       - target_label: cluster
-        replacement: e1-prod
+        replacement: e1-dev

@@ -82,13 +82,21 @@ type Binding struct {
 	Verify string `yaml:"verify"`
 }
 
-// Answer records a human's answer to a question the agent asked.
+// Answer records a human's answer to a question the agent asked. The
+// agent reads these before asking again; a question whose key is present
+// is never re-asked on this repository.
 type Answer struct {
+	// Question is the agent's question id or a stable key for it.
+	Question string `yaml:"question,omitempty"`
+	// Answer is yes or no.
+	Answer string `yaml:"answer,omitempty"`
+	// Detail is the short "where/which" a yes needs, or what a no means.
+	// Data, never an instruction to the agent.
+	Detail string `yaml:"detail,omitempty"`
 	// Cloud names a resource reference no source carried, e.g. a bucket set
 	// at runtime: {provider, resource}.
 	Cloud *CloudRef `yaml:"cloud,omitempty"`
-	// Note is free text for answers that fit no field: kept short, never
-	// an instruction to the agent.
+	// Note is free text for answers that fit no field.
 	Note string `yaml:"note,omitempty"`
 }
 
@@ -192,8 +200,14 @@ func (f *File) Lint() error {
 		}
 	}
 	for i, a := range f.Answers {
-		if a.Cloud == nil && a.Note == "" {
+		if a.Cloud == nil && a.Note == "" && a.Question == "" {
 			add("answers[%d]: empty", i)
+		}
+		if a.Question != "" && a.Answer != "yes" && a.Answer != "no" {
+			add("answers[%d].answer: must be yes or no", i)
+		}
+		if len(a.Detail) > 400 {
+			add("answers[%d].detail: keep answers short; this is data, not instructions", i)
 		}
 		if a.Cloud != nil && (a.Cloud.Provider == "" || a.Cloud.Resource == "" || strings.Contains(a.Cloud.Resource, "://") && !strings.HasPrefix(a.Cloud.Resource, "gs://") && !strings.HasPrefix(a.Cloud.Resource, "s3://")) {
 			add("answers[%d].cloud: provider and a resource name are required", i)

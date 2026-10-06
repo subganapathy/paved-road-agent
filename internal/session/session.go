@@ -95,15 +95,27 @@ func Create(ctx context.Context, client anthropic.Client, o Options, brief strin
 	return client.Beta.Sessions.New(ctx, params)
 }
 
-// Wait polls until the session is idle or terminated and returns it.
+// Wait polls until the session has finished: terminated, or idle because
+// the lead ended its turn. A session is also idle between every tool call
+// (stop reason requires_action), which is not finished; the session
+// object does not say why it is idle, so the last status_idle event does.
 func Wait(ctx context.Context, client anthropic.Client, id string, every time.Duration) (*anthropic.BetaManagedAgentsSession, error) {
 	for {
 		s, err := client.Beta.Sessions.Get(ctx, id, anthropic.BetaSessionGetParams{})
 		if err != nil {
 			return nil, err
 		}
-		if s.Status == anthropic.BetaManagedAgentsSessionStatusIdle || s.Status == anthropic.BetaManagedAgentsSessionStatusTerminated {
+		if s.Status == anthropic.BetaManagedAgentsSessionStatusTerminated {
 			return s, nil
+		}
+		if s.Status == anthropic.BetaManagedAgentsSessionStatusIdle {
+			reason, err := lastIdleReason(ctx, client, id)
+			if err != nil {
+				return nil, err
+			}
+			if reason != "requires_action" {
+				return s, nil
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -111,6 +123,22 @@ func Wait(ctx context.Context, client anthropic.Client, id string, every time.Du
 		case <-time.After(every):
 		}
 	}
+}
+
+// lastIdleReason returns the stop reason of the most recent
+// session.status_idle event on the main thread.
+func lastIdleReason(ctx context.Context, client anthropic.Client, id string) (string, error) {
+	pager := client.Beta.Sessions.Events.ListAutoPaging(ctx, id, anthropic.BetaSessionEventListParams{
+		Order: anthropic.BetaSessionEventListParamsOrderDesc,
+		Limit: anthropic.Int(50),
+	})
+	for pager.Next() {
+		ev := pager.Current()
+		if ev.Type == "session.status_idle" && ev.SessionThreadID == "" {
+			return ev.AsSessionStatusIdle().StopReason.Type, nil
+		}
+	}
+	return "", pager.Err()
 }
 
 // LastLeadMessage returns the text of the last agent.message on the main
