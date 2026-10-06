@@ -143,3 +143,22 @@ func TestGateFromVerdict(t *testing.T) {
 }
 
 var _ http.Handler = (*Controller)(nil).Webhook()
+
+func TestParseAnswerTwoBlocks(t *testing.T) {
+	text := "Here you go.\n```json\n{\"question_id\": \"q1\", \"answer\": \"no\", \"path\": \".paved-agent/discover.yaml\", \"note\": \"\"}\n```\n\n```yaml\nservice: hello\nanswers:\n  - {question: q, answer: \"no\"}\n```\n"
+	out, err := parseAnswer(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Answer != "no" || out.QuestionID != "q1" || !strings.HasPrefix(out.Content, "service: hello\n") || !strings.HasSuffix(out.Content, "\"no\"}\n") {
+		t.Errorf("parsed %+v", out)
+	}
+	// A bare object, no fence, no file: unclear answers look like this.
+	out, err = parseAnswer("{\"question_id\": \"q1\", \"answer\": \"unclear\", \"note\": \"which workload?\"}")
+	if err != nil || out.Answer != "unclear" || out.Content != "" {
+		t.Errorf("bare object: %+v %v", out, err)
+	}
+	if _, err := parseAnswer("I cannot help with that."); err == nil {
+		t.Error("prose is not an answer")
+	}
+}

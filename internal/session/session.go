@@ -34,6 +34,18 @@ type Change struct {
 	// Measured holds the results of the file's measure: queries, executed
 	// by the controller just before the session: workload → key → result.
 	Measured map[string]map[string]string
+	// Recorded lists the answers the reviewer itself committed on this
+	// pull request from replies on the thread, so the lead can tell them
+	// from the author's own edits.
+	Recorded []Recorded
+}
+
+// Recorded is one answer the controller wrote into the repository.
+type Recorded struct {
+	Question string // the question id the answer is filed under
+	Answer   string
+	By       string // the GitHub login that replied
+	Commit   string
 }
 
 // Measure executes every measure: query in the identifiers through the
@@ -104,6 +116,12 @@ func Brief(c Change) string {
 				for _, n := range names {
 					fmt.Fprintf(&sb, "  %s:\n    query: %s\n    result: %s\n", n, queryOf(c.Identifiers, k, n), indent(indent(c.Measured[k][n])))
 				}
+			}
+		}
+		if len(c.Recorded) > 0 {
+			sb.WriteString("\nAnswers the reviewer recorded on this pull request, from replies on the thread by people with write access (the commits are the reviewer's, not the author's; these are facts with a named source — cite them, do not ask them again):\n")
+			for _, r := range c.Recorded {
+				fmt.Fprintf(&sb, "- %s: %q, from @%s, commit %s\n", r.Question, r.Answer, r.By, short(r.Commit))
 			}
 		}
 	} else {

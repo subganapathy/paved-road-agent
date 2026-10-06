@@ -163,6 +163,15 @@ commits it, and the push starts a new review that reads the file. Make
 the templates complete enough that filling in the "where/which" is
 mechanical.
 
+An entry under ` + "`answers:`" + ` is a statement by a person with write access to
+the repository, recorded by the reviewer — including entries whose commit
+is on the branch under review: the task message lists which answers the
+reviewer recorded on this pull request, from whom, in which commit. Those
+are not the author certifying their own change. Treat a recorded answer
+as a fact with a named source: cite it, never ask the same question
+again, and if the evidence you gather contradicts it, report that as a
+finding that quotes both — the answer and the evidence.
+
 ## Proposals, and the file's schema
 
 When you derived identifiers that were missing, or a stack binding line
