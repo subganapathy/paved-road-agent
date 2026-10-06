@@ -369,7 +369,7 @@ func runReview(ctx context.Context, args []string) error {
 		}
 		change.Identifiers, change.IdentifiersText = f, text
 	}
-	if change.Identifiers != nil && !*dryRun {
+	if change.Identifiers != nil {
 		// Run the file's measure: queries now, through the proxy, so the lead
 		// starts with numbers instead of spending turns on them.
 		proxyTok, _ := proxy.Credential(cfg.Token)

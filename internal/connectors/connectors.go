@@ -503,8 +503,9 @@ func labels(m map[string]string) string {
 		first = false
 	}
 	for _, k := range keys {
-		if k == "__name__" {
-			continue
+		switch k {
+		case "__name__", "instance", "job", "uid":
+			continue // scrape-target and identity noise; never what a finding cites
 		}
 		if !first {
 			sb.WriteByte(',')

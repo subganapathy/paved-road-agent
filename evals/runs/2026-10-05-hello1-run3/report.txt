@@ -1,0 +1,142 @@
+verdict: WARNING
+May ship with eyes open. The generated grant is correct and narrow: principal, namespace label, pod label, port 50051 and the method path all match the caller's real manifests and live pods, the platform stamp verifies, and three new e2e checks prove the grant, an identity-based denial and survival of a node drain on every pull request. Two things to see first: a grpcurl load-generator Deployment in namespace frontend already holds ServiceAccount frontend, so the grant admits it too; and the policy lives in deploy/base, reaching e1-dev and e1-prod in one sync with no staged judgment and no alerting rules loaded anywhere to notice. Prod has no metrics, so its side is manifest-only.
+
+worst case: If the grant is wrong, hello (namespace hello, ClusterIP only, gateways: [mesh], no internet exposure) either admits a principal it should not — one idempotent read-only method, /hello.v1.HelloService/Hello, returning "hello <name>" with no persisted data and no downstream dependency — or keeps denying frontend, in which case frontend's unimplemented Home handler keeps returning Unimplemented. Blast radius is one in-mesh request path on one internal service in e1-dev and e1-prod; no user-facing path and no data is at stake. Over-grant, not outage, is the real risk. (reduced proof)
+
+stack:
+  mesh:       Istio 1.31.1, sidecar mode, PeerAuthentication mTLS STRICT in namespaces hello and frontend
+  deploy:     Argo Rollouts canary (argoproj.io/v1alpha1 Rollout) with an AnalysisTemplate on vikrant_rpcs_handled_total; Argo CD syncs deploy/envs/<env> from main; image promotion dev->staging->prod by the promote workflow
+  admission:  Kubernetes Pod Security Admission at restricted on namespaces hello and frontend; webhooks istio-sidecar-injector, istiod-default-validator, keda-admission; no OPA/Gatekeeper/Kyverno found
+  enforcer:   Kubernetes NetworkPolicy objects (default-deny plus allow lists); the CNI implementing them is not identifiable from metrics (no cilium_*/calico_*/antrea_* families)
+  autoscaler: KEDA (keda.sh/v1alpha1 ScaledObject on sum(vikrant_inflight_rpcs), shadow HPA keda-hpa-hello)
+  metrics:    Prometheus; families vikrant_rpcs_handled_total, vikrant_inflight_rpcs, vikrant_unary_latency_seconds_bucket, istio_requests_total, envoy_http_rbac; no alerting or recording rules loaded
+
+properties:
+  correct                  warning  Every identifier in the generated policies matches the caller's real namespace, pod label, service account, port and proto method, and the stamp verifies — but the grant already appears to be in force in e1-dev before merge.
+  reversible               info     Purely additive Istio and NetworkPolicy objects: no stored format, schema, contract or configuration-parsing change, and reverting the commit restores the prior deny with no data left behind.
+  within_budget            info     The grant adds no load today — frontend has no call site to hello — and the ~0.7 rps already arriving is three orders of magnitude below hello's 200 in-flight scale trigger.
+  stable_under_failure     info     hello adds no outbound call; the newly reachable path inherits a 30s server deadline cap, 10s client default, in-flight admission shedding with RESOURCE_EXHAUSTED and a mesh retry policy that does not retry that code.
+  progressively_delivered  warning  The policy lives in deploy/base, so merging applies it to e1-dev and e1-prod at the same Argo CD sync with no canary and no analysis — the Rollout's staged delivery covers images only; the worst case is a bounded over-grant, not an outage.
+  available                info     The change touches no pod template, resource, probe or disruption setting; both new objects are policy-only and every overlay is proven to apply by a server-side dry run in e2e.
+  secure                   warning  The path is mTLS STRICT and the grant is scoped to one principal and one method, but a grpcurl load-generator Deployment named traffic in namespace frontend already carries label app=frontend and ServiceAccount frontend, so the grant admits it too.
+  observable               warning  Envoy counts RBAC allows and denies per workload and the service exports per-code RPC metrics, but the metrics backend has no alerting rules at all, so a wrong grant or a denial storm would be silent until someone looks.
+  proven                   info     Three new e2e checks — the grant works, a same-namespace pod with a different service account is denied by identity, and calls survive a node drain — run on every pull request in a kind cluster with real Istio, KEDA and Argo Rollouts.
+
+[info] correct (confidence 0.93)
+  Every identifier in the two generated policies is true where the code runs: principal cluster.local/ns/frontend/sa/frontend, pod label app=frontend, namespace label kubernetes.io/metadata.name=frontend, TCP 50051 and path /hello.v1.HelloService/Hello all match the caller's manifests, the Service port and the proto.
+  evidence (config): scm_pr deploy/base/mesh/authz-allow-frontend.yaml = principals: cluster.local/ns/frontend/sa/frontend; paths: /hello.v1.HelloService/Hello
+  evidence (config): org-finder, frontend repo deploy/base/namespace.yaml + rollout.yaml ServiceAccount name and pod labels = ServiceAccount frontend in ns frontend; pod label app=frontend
+  evidence (metric): topology / kube-state-metrics kube_pod_service_account{namespace="frontend"} = service_account="frontend"
+  evidence (config): repo proto/hello/v1/hello.proto; deploy/base/services.yaml = package hello.v1; service HelloService; rpc Hello — Service port 50051 appProtocol grpc
+  recommend: No change; the generated grant is exactly as narrow as service.yaml asks and authorizedCallers and ingress are in step as the README requires.
+
+[warning] correct (confidence 0.70)
+  The grant appears to be in force in e1-dev already: the NetworkPolicy allow-from-frontend is a live object there and Envoy's RBAC filter on hello's inbound 50051 listener allows ~1.32 rps with a zero denial rate over the last 15 minutes, while main still says "Nobody may call it yet".
+  evidence (metric): topology / Prometheus kube_networkpolicy_spec_ingress_rules{namespace="hello",networkpolicy="allow-from-frontend"} = 1 (object exists in the live cluster)
+  evidence (metric): topology / Prometheus envoy_http_rbac{http_conn_manager_prefix="inbound_0.0.0.0_50051"} = allowed=7627, denied=750 cumulative; last 15m: allowed ~1.32 rps, denied rate 0
+  evidence (diff): scm_pr service.yaml before = # service.yaml for hello, owned by the hello team. Nobody may call it yet.
+  recommend: Confirm whether e1-dev's Argo CD is tracking this branch or whether the policies were applied out of band; if out of band, the cluster is ahead of main and the deny-by-default posture was not actually in force. Answer q3 so the next review can treat dev's state as intended.
+
+[info] reversible (confidence 0.95)
+  The change adds two policy objects and two list entries in service.yaml; nothing is persisted, no contract field changes, and reverting the commit returns hello to deny-by-default with no state to undo.
+  evidence (diff): scm_pr files changed = service.yaml, kustomization.yaml, two added policy files, e2e/run.sh, .platform/sha256sums — no proto, no migration, no config schema
+  evidence (config): repo deploy/base/mesh/authz-allow-nothing.yaml = spec: {} — the deny-by-default ALLOW policy stays in place; the new ALLOW is additive
+  recommend: Note only that reverting after frontend's repo is re-rendered will make frontend's e2e 'reach' check fail again — a test signal, not a data problem.
+
+[info] within_budget (confidence 0.85)
+  The new caller contributes no load today — frontend's only handler returns Unimplemented and no Go file in the frontend repo mentions hello — and the ~0.70 rps already flowing from namespace frontend is 0.35% of hello's 200 in-flight scale threshold, with in-flight RPCs measured at 0.
+  evidence (code): org-finder, frontend repo grep -r hello **/*.go = zero matches; internal/handlers/frontend_service.go Home returns codes.Unimplemented
+  evidence (metric): topology / Prometheus sum by (destination_workload)(rate(istio_requests_total{source_workload_namespace="frontend"}[1h])) = hello: 0.70 rps
+  evidence (metric): topology / Prometheus vikrant_inflight_rpcs{namespace="hello"} = unary=0, stream=0; KEDA threshold 200, dev max 2 replicas, prod max 10
+  recommend: Re-assess budget when frontend's Home handler is actually written: that pull request, not this one, is where calls-per-request and fan-out become real.
+
+[info] stable_under_failure (confidence 0.88)
+  The newly reachable path is covered by existing protections: a 30s server-side deadline cap on callers that send none, a 10s client default, in-flight admission at 2000 unary that sheds with RESOURCE_EXHAUSTED, and a mesh retry policy of 2 attempts limited to connect-failure, refused-stream and unavailable — so shed load is not retried and the retry multiplier into hello is at most 3x, bounded further by maxRetries: 10 in the DestinationRule.
+  evidence (code): internal/platform/server/interceptors.go capDeadline, admission.unary = MaxUnaryTimeout 30s; RESOURCE_EXHAUSTED above MaxInflightUnary=2000
+  evidence (config): deploy/base/mesh/virtual-service.yaml route idempotent retries = attempts: 2, retryOn: connect-failure,refused-stream,unavailable
+  evidence (config): deploy/base/mesh/destination-rules.yaml connectionPool.http.maxRetries = 10
+  evidence (code): client/client.go ServiceConfig = timeout 10s for hello.v1.HelloService/Hello; no client-side retry (retries only in the mesh)
+  recommend: No change. There is no per-caller rate limit on hello, which is acceptable with one internal caller; revisit if a second caller is granted.
+
+[warning] progressively_delivered (confidence 0.82)
+  The two policy objects sit in deploy/base, which every environment overlay includes, so merging applies the grant to e1-dev and e1-prod at the next Argo CD sync with no stage, no analysis and no pause — the environment's staged delivery (Argo Rollouts canary with a server-error AnalysisTemplate, plus the dev->staging->prod image promotion workflow) gates container images only, not policy.
+  evidence (config): repo deploy/envs/{dev,prod}/kustomization.yaml = resources: [../../base]; patches touch replicas, canary steps and ScaledObject only
+  evidence (config): .github/workflows/promote.yaml promote job = copies deploy/envs/<from>/image.yaml value to <to> — image digests only
+  evidence (metric): fleet() clusters = e1-dev (dev), e1-prod (prod); no staging cluster despite a deploy/envs/staging overlay
+  recommend: Ship with eyes open: the worst case is a bounded over-grant of one idempotent read-only method to one in-mesh identity, and the revert is a single commit. If the platform can stage policy, land it in dev first and watch envoy_http_rbac denials before prod syncs.
+
+[info] available (confidence 0.92)
+  No pod template, probe, resource, disruption budget or spread constraint is touched; both added objects are an AuthorizationPolicy and a NetworkPolicy, and e2e server-side dry-runs every overlay against the API server so an object the admission layer would reject fails CI before merge.
+  evidence (diff): scm_pr deploy/base/rollout.yaml = not in the changed-file list
+  evidence (config): e2e/run.sh:333-336 environments loop = assert "deploy/envs/<env> is accepted by the API server (server-side dry run)" -- k apply -k "$env" --dry-run=server
+  recommend: No change.
+
+[warning] secure (confidence 0.80)
+  The grant trusts the identity cluster.local/ns/frontend/sa/frontend, and a second workload already holds it: a Deployment named traffic in namespace frontend running fullstorydev/grpcurl:v1.9.3-alpine with pod label app=frontend and ServiceAccount frontend, which is the source of the ~0.7 rps now reaching hello.
+  evidence (metric): topology / kube-state-metrics kube_pod_labels / kube_pod_service_account, namespace frontend = pod traffic-77dc778c66-9h6f5, owner Deployment traffic, container grpcurl, app=frontend, serviceaccount=frontend
+  evidence (metric): topology / Prometheus rate(istio_requests_total{source_workload="traffic",destination_workload="hello"}[1h]) = 0.633 rps, response_code=200
+  evidence (config): deploy/base/mesh/peer-authentication.yaml spec.mtls.mode = STRICT — the path is encrypted and peer-verified
+  recommend: Give the load generator its own ServiceAccount and pod label so the grant names only the frontend Rollout; the data crossing the path (a name and a greeting) is not sensitive, so this is scope hygiene rather than exposure. Answer q2 if the shared identity is deliberate.
+
+[warning] observable (confidence 0.90)
+  The metrics backend evaluates no alerting or recording rules at all — metrics_rules() returns an empty group list and ALERTS{namespace=~"hello|frontend"} has no data — so a wrong grant, a denial storm or an error-rate rise on the newly reachable path would be visible only to someone querying by hand.
+  evidence (metric): metrics_rules() rule groups = {"groups":[]}
+  evidence (metric): topology / Prometheus envoy_http_rbac{http_conn_manager_prefix="inbound_0.0.0.0_50051"} = allowed/denied counters exist per workload — the signal is there, nothing watches it
+  evidence (config): deploy/base/rollout.yaml AnalysisTemplate server-errors = queries vikrant_rpcs_handled_total error ratio, but only during an image canary — it does not run for a policy sync
+  recommend: Add a rule on the signals that already exist: a nonzero rate of envoy_http_rbac denied for namespace hello, and the vikrant_rpcs_handled_total error ratio the AnalysisTemplate already defines. The absence here is of alerting on any service, not of this change's instrumentation.
+
+[info] proven (confidence 0.90)
+  The grant and its negative cases are proven by three new e2e checks that run on every pull request in a kind cluster with real Istio 1.31.1, KEDA and Argo Rollouts: frontend reaches the method, an impostor pod in namespace frontend wearing app=frontend but a different service account is denied by identity, and a drain of a node running hello causes zero failed calls.
+  evidence (diff): scm_pr e2e/run.sh:339-341,359 = check reach / check deny / ATTEMPTS=1 check no-errors ... drain_under_load frontend frontend frontend
+  evidence (config): .github/workflows/ci.yaml on: / e2e job = on: push, pull_request; e2e runs e2e/run.sh after test and image
+  evidence (diff): scm_pr e2e/run.sh check total = $((6 + 7 + 3)) = 16, matching the 16 check/assert call sites I counted in the file
+  recommend: Two residual notes: the e2e simulates frontend with a bare ServiceAccount rather than deploying the frontend repo, which is adequate because the grant is identity-based; and the drain check runs with ATTEMPTS=1 and demands failed=0, so it is the most flake-prone check in the suite.
+
+[info] correct (confidence 0.97)
+  CI's check-stamp will pass: sha256sum --check over .platform/sha256sums verifies clean at this head, so both inputs (service.yaml, the proto) and every platform-owned file match what vikrant rendered.
+  evidence (config): bash sha256sum --check --quiet .platform/sha256sums = exit 0 (STAMP OK) — all 35 entries match
+  recommend: No change.
+
+unknown: Any live fact about e1-prod: ready instances, traffic, whether the deny-by-default policies and the KEDA min 3 / max 10 ceiling are actually in force there (blocks within_budget, available, progressively_delivered); tried: up{cluster="e1-prod"} — no data; all topology queries filtered by cluster=e1-prod returned empty; only e1-dev has scraped series
+
+unknown: Whether NetworkPolicy is actually enforced by the CNI rather than merely accepted by the API server (blocks secure, correct); tried: searched the metric family list for cilium_*, calico_*, antrea_* — none present; kube_networkpolicy_* confirms the objects exist only
+
+unknown: Why e1-dev runs image digest d4a9554c while deploy/envs/dev/image.yaml pins df88762f, and whether Argo CD reports either app OutOfSync (blocks progressively_delivered); tried: kube_pod_container_info vs deploy/envs/dev/image.yaml; no argocd_* metric family is exported
+
+QUESTION q1 (blocks within_budget, available, progressively_delivered):
+  Is cluster e1-prod intentionally not scraped by this Prometheus (no series at all for cluster="e1-prod")? Without an answer, every production-side claim about hello's capacity, replica count and policy enforcement rests on manifests only, leaving within-budget, available and progressively-delivered verified in dev alone.
+  if yes → write to .paved-agent/discover.yaml:
+      - {question: q1, answer: "yes", detail: "e1-prod is deliberately not scraped by this metrics backend; production facts come from manifests only."}
+  if no → write to .paved-agent/discover.yaml:
+      - {question: q1, answer: "no", detail: "e1-prod should be scraped; the metrics backend that holds its series is <which backend>."}
+
+QUESTION q2 (blocks secure):
+  Is the Deployment named traffic in namespace frontend (image fullstorydev/grpcurl, pod label app=frontend, ServiceAccount frontend) intended to hold frontend's mesh identity permanently? If yes, this grant knowingly admits a load generator as well as the frontend service; if no, the grant is broader in practice than it reads, which leaves secure unresolved.
+  if yes → write to .paved-agent/discover.yaml:
+      - {question: q2, answer: "yes", detail: "The traffic Deployment in ns frontend deliberately shares label app=frontend and ServiceAccount frontend; grants to that principal admit it by design."}
+  if no → write to .paved-agent/discover.yaml:
+      - {question: q2, answer: "no", detail: "The traffic Deployment must get its own ServiceAccount and pod label; tracked in <issue or PR>."}
+
+QUESTION q3 (blocks correct, progressively_delivered):
+  Was the allow-from-frontend NetworkPolicy (and the matching AuthorizationPolicy) applied to e1-dev before this pull request merged — for example because Argo CD tracks this branch there? A yes explains the live objects and the zero denial rate; a no means something outside GitOps wrote them, and correct stays only partly verified.
+  if yes → write to .paved-agent/discover.yaml:
+      - {question: q3, answer: "yes", detail: "e1-dev's Argo CD tracks pull-request branches, so hello's generated policies are live in dev before merge."}
+  if no → write to .paved-agent/discover.yaml:
+      - {question: q3, answer: "no", detail: "e1-dev should only sync main; the live allow-from-frontend objects were applied out of band and must be reconciled."}
+
+PROPOSAL .paved-agent/discover.yaml (Bootstrap: the repository had no discover.yaml. Identifiers derived from deploy/base (namespace, pod labels, container name) and confirmed against the fleet and live metrics; stack lines discovered from the metrics backend's family list and the platform's manifests, each with a cheap re-verification query.):
+    service: hello
+    workloads:
+      - namespace: hello
+        selector: app=hello
+        container: hello
+        clusters: all
+        stack:
+          mesh:       {is: "Istio 1.31.1, sidecar mode, PeerAuthentication mTLS STRICT", verify: "pilot_info returns a series; kube_namespace_labels{namespace=\"hello\"} has label_istio_injection=\"enabled\""}
+          deploy:     {is: "Argo Rollouts canary with a Prometheus AnalysisTemplate; Argo CD syncs deploy/envs/<env> from main", verify: "kube_replicaset_owner{namespace=\"hello\"} has owner_kind=\"Rollout\"; deploy/base/rollout.yaml declares kind: Rollout"}
+          admission:  {is: "Kubernetes Pod Security Admission at restricted; webhooks istio-sidecar-injector, istiod-default-validator, keda-admission", verify: "kube_namespace_labels{namespace=\"hello\"} has label_pod_security_kubernetes_io_enforce=\"restricted\""}
+          enforcer:   {is: "Kubernetes NetworkPolicy, default-deny plus explicit allows; the implementing CNI is not identifiable from metrics", verify: "kube_networkpolicy_spec_ingress_rules{namespace=\"hello\"} lists default-deny and allow-platform"}
+          autoscaler: {is: "KEDA ScaledObject on sum(vikrant_inflight_rpcs), shadow HPA keda-hpa-hello", verify: "kube_horizontalpodautoscaler_info{namespace=\"hello\"} has horizontalpodautoscaler=\"keda-hpa-hello\""}
+          metrics:    {is: "Prometheus; families vikrant_rpcs_handled_total, vikrant_inflight_rpcs, vikrant_unary_latency_seconds_bucket, istio_requests_total, envoy_http_rbac; no alerting rules loaded", verify: "vikrant_inflight_rpcs{namespace=\"hello\"} returns data; metrics_rules() group list is non-empty"}
+    docs:
+      - README.md
