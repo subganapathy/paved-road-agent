@@ -1,0 +1,33 @@
+# A traffic generator with frontend's identity, so the metric queries have
+# something to return: ~5 rps of Hello calls from frontend to hello.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic
+  namespace: frontend
+  labels: {app: frontend, role: traffic}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: frontend, role: traffic}}
+  template:
+    metadata:
+      labels: {app: frontend, role: traffic}
+    spec:
+      serviceAccountName: frontend
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: grpcurl
+          image: fullstorydev/grpcurl:v1.9.3-alpine
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                grpcurl -plaintext -max-time 2 -import-path /proto -proto hello.proto -d '{"name":"traffic"}' hello.hello.svc.cluster.local:50051 hello.v1.HelloService/Hello >/dev/null 2>&1
+                sleep 0.2
+              done
+          resources: {requests: {cpu: 10m, memory: 16Mi}, limits: {cpu: 100m, memory: 64Mi}}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          volumeMounts: [{name: proto, mountPath: /proto, readOnly: true}]
+      volumes:
+        - name: proto
+          configMap: {name: hello-proto}   # the service's proto, so calls need no reflection (which authz denies)

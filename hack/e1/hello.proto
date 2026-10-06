@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package hello.v1;
+
+// HelloService greets whoever calls it.
+service HelloService {
+  // Hello answers "hello <name>". It has no side effects, so the mesh may retry it.
+  rpc Hello(HelloRequest) returns (HelloResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+message HelloRequest {
+  string name = 1;
+}
+
+message HelloResponse {
+  string message = 1;
+}

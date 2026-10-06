@@ -1,0 +1,62 @@
+global:
+  external_labels:
+    cluster: e1-prod
+  # Prometheus's default is 1m. 5s gives rate() windows of 15-30s enough
+  # samples to be useful in a 30-60s experiment.
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: pods
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      # Only pods that opt in.
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      # kube-state-metrics has its own job below (honor_labels), because
+      # this job's namespace/pod rewrites would clobber its labels.
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        regex: kube-state-metrics
+        action: drop
+      # Completed pods (e.g. a finished loadgen) have nothing to scrape.
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Succeeded|Failed
+        action: drop
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        regex: (.+)
+        target_label: __metrics_path__
+      # Replace the discovered port with the annotated one. The pod role
+      # yields one target per declared container port; after this rewrite
+      # they are identical and Prometheus keeps one.
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      # Carry pod labels (app, version, pod-template-hash, and later
+      # rollouts-pod-template-hash) onto every series.
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        target_label: node
+      - target_label: cluster
+        replacement: e1-prod
+  - job_name: kube-state-metrics
+    honor_labels: true
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces: {names: [monitoring]}
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        regex: kube-state-metrics
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        regex: "8080"
+        action: keep
+      - target_label: cluster
+        replacement: e1-prod
