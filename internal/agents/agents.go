@@ -423,8 +423,10 @@ caller, the path). For a property this change cannot affect, one
 obligation: "show why it is unaffected" in one line. Weight by the worst
 case.
 
-Finish with the instantiation as JSON inside one fenced block marked
-json, and nothing after it:
+Write nothing but the instantiation: no prose version of it before the
+JSON — put the reasoning inside the "establish" strings, which is where
+the executor reads it. Output exactly one fenced block marked json and
+nothing else:
 
 {
   "worst_case": "<what fails, for whom, where, if this change is wrong>",

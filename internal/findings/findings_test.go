@@ -72,3 +72,20 @@ func TestQuestionsRender(t *testing.T) {
 		t.Errorf("render:\n%s", out)
 	}
 }
+
+func TestHyphenatedIdsAreAccepted(t *testing.T) {
+	in, err := ParseInstantiation("```json\n{\"worst_case\":\"x\",\"proportionality\":\"full\",\"obligations\":[{\"property\":\"progressively-delivered\",\"establish\":\"y\",\"evidence\":\"z\"}]}\n```")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Obligations[0].Property != "progressively_delivered" {
+		t.Errorf("not canonicalized: %q", in.Obligations[0].Property)
+	}
+	r := &Report{Findings: []Finding{{Property: "stable-under-failure", Severity: Info, Claim: "c", Evidence: []Evidence{{Source: "s", Value: "v"}}}}, Properties: map[string]Verdict{"within-budget": {Verdict: Info}}}
+	if d := r.Normalize(); len(d) != 0 {
+		t.Errorf("dropped a valid finding with a hyphenated id: %+v", d)
+	}
+	if _, ok := r.Properties["within_budget"]; !ok {
+		t.Error("property key not canonicalized")
+	}
+}

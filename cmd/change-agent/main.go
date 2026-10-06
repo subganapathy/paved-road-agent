@@ -429,8 +429,8 @@ func runReview(ctx context.Context, args []string) error {
 	case "staged":
 		// The strongest model writes the obligations (short); the smaller
 		// model does everything else. Budgets: a third, then the rest.
-		st := session.Staged{Instantiate: opts(inst, *budget/3), Execute: opts(dev, *budget)}
-		fmt.Fprintf(os.Stderr, "instantiate on %s (budget $%.2f), execute on %s (budget $%.2f)\n", inst.ID, *budget/3, dev.ID, *budget)
+		st := session.Staged{Instantiate: opts(inst, *budget/2), Execute: opts(dev, *budget)}
+		fmt.Fprintf(os.Stderr, "instantiate on %s (budget $%.2f), execute on %s (budget $%.2f)\n", inst.ID, *budget/2, dev.ID, *budget)
 		out, err := st.Run(ctx, client, brief)
 		if out != nil {
 			for _, u := range out.Usage {

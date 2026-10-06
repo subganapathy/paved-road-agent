@@ -77,7 +77,8 @@ func ParseInstantiation(text string) (*Instantiation, error) {
 		return nil, errors.New("instantiation has no worst case or no obligations")
 	}
 	for i, o := range in.Obligations {
-		if !slices.Contains(Properties, o.Property) {
+		in.Obligations[i].Property = Canonical(o.Property)
+		if !slices.Contains(Properties, in.Obligations[i].Property) {
 			return nil, fmt.Errorf("obligation %d names property %q, not one of %s", i, o.Property, strings.Join(Properties, ", "))
 		}
 	}
@@ -165,9 +166,16 @@ type Report struct {
 	Summary       string             `json:"summary"`
 }
 
+// Canonical maps a property id as the program spells it (hyphens) or as
+// the report spells it (underscores) to the report's spelling.
+func Canonical(id string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(id), "-", "_"))
+}
+
 // Validate enforces the contract on a finding.
 func (f Finding) Validate() error {
 	var errs []string
+	f.Property = Canonical(f.Property)
 	if !slices.Contains(Properties, f.Property) {
 		errs = append(errs, fmt.Sprintf("property %q is not one of %s", f.Property, strings.Join(Properties, ", ")))
 	}
@@ -198,6 +206,20 @@ func (f Finding) Validate() error {
 // say so), fills missing property verdicts from the findings, and sets
 // the overall verdict. The controller calls it before rendering.
 func (r *Report) Normalize() (dropped []Finding) {
+	// Accept the program's hyphenated ids everywhere.
+	for i := range r.Findings {
+		r.Findings[i].Property = Canonical(r.Findings[i].Property)
+	}
+	for i := range r.Instantiation.Obligations {
+		r.Instantiation.Obligations[i].Property = Canonical(r.Instantiation.Obligations[i].Property)
+	}
+	if len(r.Properties) > 0 {
+		props := make(map[string]Verdict, len(r.Properties))
+		for k, v := range r.Properties {
+			props[Canonical(k)] = v
+		}
+		r.Properties = props
+	}
 	kept := r.Findings[:0]
 	for _, f := range r.Findings {
 		if err := f.Validate(); err != nil {
