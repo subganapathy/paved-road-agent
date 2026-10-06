@@ -42,6 +42,7 @@ type Loaded struct {
 	Change      change.Change
 	Title, Body string
 	HeadSHA     string
+	HeadRef     string // the PR branch, where answers and proposals are committed
 	BaseSHA     string
 	RepoURL     string // https://github.com/owner/repo
 	HTMLURL     string
@@ -92,6 +93,7 @@ func (c *Client) Load(ctx context.Context, pr PR) (*Loaded, error) {
 		HTMLURL string `json:"html_url"`
 		Head    struct {
 			SHA  string `json:"sha"`
+			Ref  string `json:"ref"`
 			Repo struct {
 				HTMLURL string `json:"html_url"`
 			} `json:"repo"`
@@ -106,7 +108,7 @@ func (c *Client) Load(ctx context.Context, pr PR) (*Loaded, error) {
 	}
 	out := &Loaded{
 		Title: meta.Title, Body: meta.Body, HTMLURL: meta.HTMLURL,
-		HeadSHA: meta.Head.SHA, BaseSHA: meta.Base.SHA,
+		HeadSHA: meta.Head.SHA, HeadRef: meta.Head.Ref, BaseSHA: meta.Base.SHA,
 		RepoURL: fmt.Sprintf("https://github.com/%s/%s", pr.Owner, pr.Repo),
 	}
 	out.Change.Ref = fmt.Sprintf("%s/%s#%d", pr.Owner, pr.Repo, pr.Number)
@@ -192,4 +194,32 @@ func escapePath(p string) string {
 		parts[i] = url.PathEscape(s)
 	}
 	return strings.Join(parts, "/")
+}
+
+// OpenPR is one open pull request, as polling needs it.
+type OpenPR struct {
+	Number  int
+	HeadSHA string
+	HeadRef string
+	Title   string
+}
+
+// OpenPRs lists a repository's open pull requests.
+func (c *Client) OpenPRs(ctx context.Context, owner, repo string) ([]OpenPR, error) {
+	var raw []struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		Head   struct {
+			SHA string `json:"sha"`
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls?state=open&per_page=50", url.PathEscape(owner), url.PathEscape(repo)), &raw); err != nil {
+		return nil, err
+	}
+	out := make([]OpenPR, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, OpenPR{Number: r.Number, HeadSHA: r.Head.SHA, HeadRef: r.Head.Ref, Title: r.Title})
+	}
+	return out, nil
 }

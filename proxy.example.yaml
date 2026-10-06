@@ -37,3 +37,13 @@ agent:
   proxy: http://127.0.0.1:8080           # where the worker reaches the proxy
   workdir: /tmp/paved-road-agent/work
   budget_usd: 3
+
+# Optional: `change-agent serve` reviews these repositories' pull requests
+# itself, from GitHub webhooks (POST /github/webhook) or by polling
+# (--poll 60s, for a laptop with no inbound URL). The CLI `review` command
+# needs none of this.
+watch:
+  repos: [hello, frontend, ledger]
+  webhook_secret: keychain:paved-agent-webhook   # empty = unsigned; only acceptable with --poll and no public URL
+  commit_files: true                             # the controller may commit .paved-agent/ on PR branches (answers, proposals)
+  state_dir: /tmp/paved-road-agent/state

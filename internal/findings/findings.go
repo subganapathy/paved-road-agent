@@ -292,3 +292,65 @@ func oneLine(s string) string {
 func indent(s string) string {
 	return "    " + strings.ReplaceAll(strings.TrimRight(s, "\n"), "\n", "\n    ")
 }
+
+// Markdown renders the report as a pull request comment.
+func Markdown(r *Report, droppedCount int, usage string) string {
+	var sb strings.Builder
+	badge := map[Severity]string{Blocking: "🔴 BLOCKING", Warning: "🟡 WARNING", Info: "🟢 INFO"}
+	fmt.Fprintf(&sb, "## impact: %s\n\n%s\n", badge[r.Verdict], r.Summary)
+	if r.Instantiation.WorstCase != "" {
+		fmt.Fprintf(&sb, "\n**Worst case:** %s _(%s proof)_\n", r.Instantiation.WorstCase, r.Instantiation.Proportionality)
+	}
+	if len(r.Discovery.Stack) > 0 {
+		sb.WriteString("\n<details><summary>What this service runs on (discovered)</summary>\n\n")
+		for _, k := range []string{"mesh", "deploy", "admission", "enforcer", "autoscaler", "metrics"} {
+			if l, ok := r.Discovery.Stack[k]; ok {
+				fmt.Fprintf(&sb, "- **%s:** %s — _%s_\n", k, l.Is, l.Evidence)
+			}
+		}
+		if len(r.Discovery.Broken) > 0 {
+			fmt.Fprintf(&sb, "- broken bindings re-discovered: %s\n", strings.Join(r.Discovery.Broken, ", "))
+		}
+		sb.WriteString("\n</details>\n")
+	}
+	sb.WriteString("\n| Property | Verdict | |\n|---|---|---|\n")
+	for _, p := range Properties {
+		if v, ok := r.Properties[p]; ok {
+			fmt.Fprintf(&sb, "| %s | %s | %s |\n", strings.ReplaceAll(p, "_", " "), v.Verdict, v.Summary)
+		}
+	}
+	for _, f := range r.Findings {
+		fmt.Fprintf(&sb, "\n**[%s] %s** — %s _(confidence %.2f)_\n", f.Severity, strings.ReplaceAll(f.Property, "_", " "), f.Claim, f.Confidence)
+		for _, e := range f.Evidence {
+			src := e.Source
+			if e.Query != "" {
+				src += " · `" + oneLine(e.Query) + "`"
+			}
+			fmt.Fprintf(&sb, "- evidence (%s): %s → `%s`\n", e.Kind, src, oneLine(e.Value))
+		}
+		if f.Recommendation != "" {
+			fmt.Fprintf(&sb, "- recommend: %s\n", f.Recommendation)
+		}
+	}
+	for _, q := range r.Questions {
+		fmt.Fprintf(&sb, "\n### ❓ Question %s\n\n%s\n\n_Blocks: %s. Reply **yes** or **no** on this thread; I will write the file and the review restarts on the push._\n", q.ID, q.Text, strings.Join(q.Blocks, ", "))
+		for _, a := range []string{"yes", "no"} {
+			if fc, ok := q.Answers[a]; ok {
+				fmt.Fprintf(&sb, "\n<details><summary>if %s → %s</summary>\n\n```yaml\n%s\n```\n</details>\n", a, fc.Path, strings.TrimRight(fc.Content, "\n"))
+			}
+		}
+	}
+	for _, u := range r.Unknowns {
+		fmt.Fprintf(&sb, "\n- unknown: %s (blocks %s); tried: %s\n", u.What, strings.Join(u.Blocks, ", "), strings.Join(u.Tried, "; "))
+	}
+	for _, p := range r.Proposals {
+		fmt.Fprintf(&sb, "\n<details><summary>Proposed %s — %s</summary>\n\n```yaml\n%s\n```\n</details>\n", p.Path, p.Reason, strings.TrimRight(p.Content, "\n"))
+	}
+	if droppedCount > 0 {
+		fmt.Fprintf(&sb, "\n_%d finding(s) without evidence were dropped._\n", droppedCount)
+	}
+	if usage != "" {
+		fmt.Fprintf(&sb, "\n<sub>%s</sub>\n", usage)
+	}
+	return sb.String()
+}

@@ -5,6 +5,7 @@
 //	change-agent proxy   --config proxy.yaml            serve the connectors
 //	change-agent worker  --config proxy.yaml --once     claim one session and serve its tools
 //	change-agent review  --config proxy.yaml --pr org/repo#N
+//	change-agent serve   --config proxy.yaml [--poll 60s]  proxy + controller + worker: reviews watched repos' PRs
 package main
 
 import (
@@ -27,6 +28,7 @@ import (
 
 	"github.com/subganapathy/paved-road-agent/internal/agents"
 	"github.com/subganapathy/paved-road-agent/internal/connectors"
+	"github.com/subganapathy/paved-road-agent/internal/controller"
 	"github.com/subganapathy/paved-road-agent/internal/github"
 	"github.com/subganapathy/paved-road-agent/internal/identifiers"
 	"github.com/subganapathy/paved-road-agent/internal/proxy"
@@ -50,6 +52,8 @@ func main() {
 		err = runWorker(ctx, os.Args[2:])
 	case "review":
 		err = runReview(ctx, os.Args[2:])
+	case "serve":
+		err = runServe(ctx, os.Args[2:])
 	default:
 		usage()
 	}
@@ -60,7 +64,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: change-agent setup|proxy|worker|review [flags]")
+	fmt.Fprintln(os.Stderr, "usage: change-agent setup|proxy|worker|review|serve [flags]")
 	os.Exit(2)
 }
 
@@ -78,6 +82,14 @@ type agentConfig struct {
 		Workdir        string  `yaml:"workdir"`
 		BudgetUSD      float64 `yaml:"budget_usd"`
 	} `yaml:"agent"`
+	// Watch is the controller's part: which repositories' PRs to review
+	// when serving, and how to write back.
+	Watch struct {
+		Repos         []string `yaml:"repos"`
+		WebhookSecret string   `yaml:"webhook_secret"` // credential source; empty = unsigned (poll mode only)
+		CommitFiles   bool     `yaml:"commit_files"`   // may the controller commit .paved-agent/ to PR branches
+		StateDir      string   `yaml:"state_dir"`
+	} `yaml:"watch"`
 }
 
 func loadAgentConfig(path string) (agentConfig, error) {
@@ -417,6 +429,99 @@ func runReview(ctx context.Context, args []string) error {
 	if *out != "" {
 		b, _ := json.MarshalIndent(rep, "", "  ")
 		return os.WriteFile(*out, append(b, '\n'), 0o644)
+	}
+	return nil
+}
+
+// ---- serve ----------------------------------------------------------------
+
+// runServe is the deployment shape: the proxy, the controller (webhook at
+// /github/webhook, or polling), and a worker loop, in one process.
+func runServe(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	cfgPath := fs.String("config", "proxy.yaml", "configuration file")
+	lockPath := fs.String("lock", "agents.lock.json", "from setup")
+	poll := fs.Duration("poll", 0, "poll open PRs at this interval instead of relying on webhooks (laptops have no inbound URL)")
+	noWorker := fs.Bool("no-worker", false, "do not run a worker loop in this process")
+	fs.Parse(args)
+
+	a, err := loadAgentConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := proxy.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	if cfg.Slots.SCM == nil {
+		return errors.New("slots.scm is required to serve")
+	}
+	if len(a.Watch.Repos) == 0 {
+		return errors.New("watch.repos is empty: nothing to review")
+	}
+	client, err := anthropicClient(a)
+	if err != nil {
+		return err
+	}
+	lk, err := readLock(*lockPath)
+	if err != nil {
+		return err
+	}
+	lead, ok := lk.Agents[agents.LeadKey]
+	if !ok || a.Agent.EnvironmentID == "" {
+		return fmt.Errorf("run setup first, and set agent.environment_id in %s", *cfgPath)
+	}
+	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	srv, err := proxy.New(cfg, log)
+	if err != nil {
+		return err
+	}
+	ghTok, err := proxy.Credential(cfg.Slots.SCM.Auth)
+	if err != nil {
+		return err
+	}
+	secret, err := proxy.Credential(a.Watch.WebhookSecret)
+	if err != nil {
+		return err
+	}
+	budget := a.Agent.BudgetUSD
+	if budget == 0 {
+		budget = 3
+	}
+	ctl, err := controller.New(controller.Config{
+		Org: cfg.Slots.SCM.Org, Watch: a.Watch.Repos, WebhookSecret: secret, CommitFiles: a.Watch.CommitFiles, StateDir: a.Watch.StateDir,
+		BudgetUSD: budget, LeadID: lead.ID, LeadVersion: lead.Version, EnvironmentID: a.Agent.EnvironmentID,
+	}, client, srv.SCM(), &github.Client{Token: ghTok, Base: cfg.Slots.SCM.API}, log)
+	if err != nil {
+		return err
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/github/webhook", ctl.Webhook())
+	mux.Handle("/", srv)
+	hs := &http.Server{Addr: cfg.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(shutdown)
+	}()
+	if !*noWorker {
+		o, err := workerOptions(a, cfg, false)
+		if err != nil {
+			return err
+		}
+		go func() {
+			if err := sandbox.Run(ctx, client, o); err != nil {
+				log.Error("worker", "err", err)
+			}
+		}()
+	}
+	if *poll > 0 {
+		go ctl.Poll(ctx, *poll)
+	}
+	log.Info("serving", "addr", cfg.Listen, "watch", a.Watch.Repos, "poll", poll.String(), "webhook", "/github/webhook")
+	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
 	}
 	return nil
 }

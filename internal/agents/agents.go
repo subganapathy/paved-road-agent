@@ -109,8 +109,11 @@ and which properties it blocks. Then ask one question per unknown that a
 human can answer with yes or no (plus the short "where/which" a yes
 needs), and for each answer give the exact text to add to
 ` + "`.paved-agent/discover.yaml`" + `. The question states which properties stay
-unverified without it. You never parse prose answers yourself; the next
-run reads the file.
+unverified without it. Humans answer on the pull request in prose; a
+separate step turns the reply into the file using your templates and
+commits it, and the push starts a new review that reads the file. Make
+the templates complete enough that filling in the "where/which" is
+mechanical.
 
 ## Proposals
 
