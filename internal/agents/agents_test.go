@@ -13,7 +13,7 @@ func TestPromptsNameNoProduct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range append([]Def{Lead(p)}, Specialists...) {
+	for _, d := range append([]Def{Lead(p, "", "")}, Specialists...) {
 		if hits := FindProductNames(d.System + " " + d.Description); len(hits) > 0 {
 			t.Errorf("%s: product names in prompt: %v", d.Key, hits)
 		}
@@ -30,7 +30,7 @@ func TestParamsWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lead := Lead(p)
+	lead := Lead(p, "", "")
 	custom, err := connectors.Definitions(reg, lead.Connectors)
 	if err != nil {
 		t.Fatal(err)

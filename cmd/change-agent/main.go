@@ -83,6 +83,7 @@ type agentConfig struct {
 		Proxy          string  `yaml:"proxy"`           // where the worker reaches the proxy
 		Workdir        string  `yaml:"workdir"`
 		BudgetUSD      float64 `yaml:"budget_usd"`
+		LeadEffort     string  `yaml:"lead_effort"` // low | medium | high; default medium
 	} `yaml:"agent"`
 	// Watch is the controller's part: which repositories' PRs to review
 	// when serving, and how to write back.
@@ -223,7 +224,14 @@ func runSetup(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := upsert(agents.Lead(program), roster); err != nil {
+	// Two leads from the same program: the release tier on the strongest
+	// model, and a dev tier on the smaller one for iterating cheaply.
+	if err := upsert(agents.Lead(program, "", a.Agent.LeadEffort), roster); err != nil {
+		return err
+	}
+	dev := agents.Lead(program, agents.SpecialistModel, "medium")
+	dev.Key, dev.Name = agents.LeadKey+"-dev", "Impact lead (dev tier)"
+	if err := upsert(dev, roster); err != nil {
 		return err
 	}
 	return writeLock(*lockPath, l)
@@ -323,6 +331,7 @@ func runReview(ctx context.Context, args []string) error {
 	withWorker := fs.Bool("worker", true, "run a one-session worker in this process (the proxy must already be running)")
 	dryRun := fs.Bool("dry-run", false, "print the brief and stop; no session")
 	out := fs.String("out", "", "also write the report JSON here")
+	tier := fs.String("tier", "release", "release (strongest model) or dev (smaller model, for iterating)")
 	fs.Parse(args)
 
 	a, err := loadAgentConfig(*cfgPath)
@@ -374,9 +383,13 @@ func runReview(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	lead, ok := lk.Agents[agents.LeadKey]
+	leadKey := agents.LeadKey
+	if *tier == "dev" {
+		leadKey += "-dev"
+	}
+	lead, ok := lk.Agents[leadKey]
 	if !ok || a.Agent.EnvironmentID == "" {
-		return fmt.Errorf("run setup first, and set agent.environment_id in %s", *cfgPath)
+		return fmt.Errorf("run setup first (tier %s), and set agent.environment_id in %s", *tier, *cfgPath)
 	}
 	if *budget == 0 {
 		*budget = a.Agent.BudgetUSD

@@ -177,13 +177,13 @@ func Tools(c *Client, workdir string) ([]anthropic.BetaTool, error) {
 				return text(out)
 			})),
 		add(toolrunner.NewBetaToolFromJSONSchema(MetricsQuery,
-			"Run a PromQL instant query against the fleet's metrics and return the backend's raw JSON. Form queries from what metrics_label_values showed exists; do not assume a metric family is present.",
+			"Run a PromQL instant query against the fleet's metrics. Returns one line per series: {label=value,…} value. Form queries from what metrics_label_values showed exists; do not assume a metric family is present. Issue every independent query you need in the same turn.",
 			func(ctx context.Context, in queryIn) (anthropic.BetaToolResultBlockParamContentUnion, error) {
 				out, err := c.call(ctx, "POST", "/v1/metrics/query", in)
 				if err != nil {
 					return fail(err)
 				}
-				return text(out)
+				return text(compactVector(out, 60))
 			})),
 		add(toolrunner.NewBetaToolFromJSONSchema(MetricsQueryRange,
 			"Run a PromQL range query (bounded by the proxy's maximum range). Use it for trends; prefer metrics_query for a current value.",
@@ -195,13 +195,13 @@ func Tools(c *Client, workdir string) ([]anthropic.BetaTool, error) {
 				return text(out)
 			})),
 		add(toolrunner.NewBetaToolFromJSONSchema(MetricsSeries,
-			"List the series matching selectors, with their labels: the way to see which label values exist (which clusters, namespaces, workloads) before querying.",
+			"List the series matching selectors, one per line with their labels: the way to see which label values exist (which clusters, namespaces, workloads) before querying.",
 			func(ctx context.Context, in seriesIn) (anthropic.BetaToolResultBlockParamContentUnion, error) {
 				out, err := c.call(ctx, "POST", "/v1/metrics/series", in)
 				if err != nil {
 					return fail(err)
 				}
-				return text(out)
+				return text(compactSeries(out, 80))
 			})),
 		add(toolrunner.NewBetaToolFromJSONSchema(MetricsRules,
 			"The alerting and recording rules the metrics backend evaluates: the way to learn whether an alert watches a signal.",
@@ -231,7 +231,7 @@ func Tools(c *Client, workdir string) ([]anthropic.BetaTool, error) {
 				return text(out)
 			})),
 		add(toolrunner.NewBetaToolFromJSONSchema(SCMRead,
-			"Read one file from a repository at a ref, without mounting the whole repository.",
+			"Read one file from a repository at a ref, without mounting it. Costly: it returns the whole file into your context. When the repository is already mounted in the sandbox (yours or by another agent in this session), use grep and read on it instead; mount it with scm_mount if you will read more than two files.",
 			func(ctx context.Context, in readIn) (anthropic.BetaToolResultBlockParamContentUnion, error) {
 				out, err := c.call(ctx, "POST", "/v1/scm/read", in)
 				if err != nil {
@@ -416,4 +416,90 @@ func Definitions(reg []anthropic.BetaTool, names []string) ([]anthropic.BetaAgen
 		}})
 	}
 	return out, nil
+}
+
+// compactVector renders a Prometheus instant-query result as one line per
+// series, which is what the model needs and a fifth of the JSON.
+func compactVector(raw string, maxSeries int) string {
+	var resp struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+		Data   struct {
+			ResultType string `json:"resultType"`
+			Result     []struct {
+				Metric map[string]string `json:"metric"`
+				Value  []any             `json:"value"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil || resp.Status != "success" || resp.Data.ResultType != "vector" {
+		return raw // not a vector (an error, a scalar, a range): pass through
+	}
+	if len(resp.Data.Result) == 0 {
+		return "no data (empty result)"
+	}
+	var sb strings.Builder
+	for i, r := range resp.Data.Result {
+		if i >= maxSeries {
+			fmt.Fprintf(&sb, "… %d more series; narrow the query or aggregate\n", len(resp.Data.Result)-maxSeries)
+			break
+		}
+		sb.WriteString(labels(r.Metric))
+		if len(r.Value) == 2 {
+			fmt.Fprintf(&sb, " %v", r.Value[1])
+		}
+		sb.WriteByte('\n')
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// compactSeries renders a series listing one per line.
+func compactSeries(raw string, maxSeries int) string {
+	var resp struct {
+		Status string              `json:"status"`
+		Data   []map[string]string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil || resp.Status != "success" {
+		return raw
+	}
+	if len(resp.Data) == 0 {
+		return "no series match"
+	}
+	var sb strings.Builder
+	for i, m := range resp.Data {
+		if i >= maxSeries {
+			fmt.Fprintf(&sb, "… %d more series\n", len(resp.Data)-maxSeries)
+			break
+		}
+		sb.WriteString(labels(m))
+		sb.WriteByte('\n')
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func labels(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	sb.WriteByte('{')
+	first := true
+	if n, ok := m["__name__"]; ok {
+		sb.WriteString(n)
+		first = false
+	}
+	for _, k := range keys {
+		if k == "__name__" {
+			continue
+		}
+		if !first {
+			sb.WriteByte(',')
+		}
+		first = false
+		sb.WriteString(k + "=" + m[k])
+	}
+	sb.WriteByte('}')
+	return sb.String()
 }

@@ -62,13 +62,21 @@ var Specialists = []Def{
 }
 
 // Lead is the coordinator. Its system prompt is the program plus the
-// mechanics: the roster, the report contract, how to ask.
-func Lead(p *Program) Def {
+// mechanics: the roster, the report contract, how to ask. model and
+// effort select the tier: the strongest model at medium effort is the
+// default; a smaller model is the dev tier for iterating cheaply.
+func Lead(p *Program, model, effort string) Def {
+	if model == "" {
+		model = LeadModel
+	}
+	if effort == "" {
+		effort = "medium"
+	}
 	return Def{
 		Key:         LeadKey,
 		Name:        "Impact lead",
 		Description: "Reviews one pull request against the properties of a good change: instantiates them for the change, delegates discovery to specialists, grades with evidence, writes the report.",
-		Model:       LeadModel, Effort: "high",
+		Model:       model, Effort: effort,
 		Builtin: sandboxTools, Connectors: connectors.Sets["lead"],
 		System: p.Render() + "\n\n" + leadMechanics,
 	}
@@ -198,7 +206,15 @@ nothing after it:
 
 Every property gets a verdict. Every finding carries evidence. The
 verdict is the most severe property. Products you discovered are named in
-discovery.stack and in claims where it helps the reader.`
+discovery.stack and in claims where it helps the reader.
+
+Keep it tight: at most two findings per property, the strongest; a claim
+is one sentence with its number; an evidence value is the line or number
+that matters, not the whole output; the summary is under 120 words. The
+report is read by a busy reviewer, and every word you write is paid for.
+
+Spend turns, not words: when you need several things from the repository
+or the specialists, ask for them in the same turn.`
 
 const topologySystem = `You are the topology discoverer. You find out what a service runs on and
 what runs around it. You never change anything; every tool you have is
@@ -261,6 +277,10 @@ Return the binding as lines the next run can verify, in this form:
   mesh: <is> — verify: <one or two cheap checks>
 for each of mesh, deploy, admission, enforcer, autoscaler, metrics.
 
+Work in as few turns as you can: every independent query goes out in the
+same turn, not one per turn. Read mounted repositories with grep and read,
+not scm_read.
+
 ## 2. Follow the identifiers
 
 With the stack known, measure. Per cluster the identifiers name (use
@@ -299,7 +319,7 @@ plausible number.
 Return plain text with headings: Stack (the binding lines, each with its
 evidence), Mapping (question to query), Measurements (by environment and
 cluster, each with the query), Unknowns (what you could not establish and
-what you tried). Nothing else.`
+what you tried). Facts and numbers, one line each, no narrative.`
 
 const orgFinderSystem = `You are the org finder. You locate, in the organisation's source control,
 the repository that holds something a review needs, mount it into the
