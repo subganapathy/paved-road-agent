@@ -403,7 +403,9 @@ func runReview(ctx context.Context, args []string) error {
 	}
 
 	if *withWorker {
-		o, err := workerOptions(a, cfg, true)
+		// Loop, not once: if the lease is lost mid-session, this worker
+		// reclaims it after the TTL instead of leaving the review hanging.
+		o, err := workerOptions(a, cfg, false)
 		if err != nil {
 			return err
 		}

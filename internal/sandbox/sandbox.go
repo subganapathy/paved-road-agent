@@ -48,7 +48,10 @@ type Options struct {
 	// MaxIdle is how long after the session goes idle the worker stops
 	// serving it. The lead ending its turn is the normal exit.
 	MaxIdle time.Duration
-	Logger  *slog.Logger
+	// ReclaimAfter is how stale a lease must be before this worker takes
+	// the item over. The server's lease TTL is 300s; default 330s.
+	ReclaimAfter time.Duration
+	Logger       *slog.Logger
 }
 
 // Run claims work and serves it until ctx ends, or after one item when
@@ -63,6 +66,9 @@ func Run(ctx context.Context, client anthropic.Client, o Options) error {
 	if o.MaxIdle == 0 {
 		o.MaxIdle = 30 * time.Second
 	}
+	if o.ReclaimAfter == 0 {
+		o.ReclaimAfter = 330 * time.Second
+	}
 	log := o.Logger
 	if log == nil {
 		log = slog.Default()
@@ -71,11 +77,20 @@ func Run(ctx context.Context, client anthropic.Client, o Options) error {
 
 	// The poller claims; HandleItem owns the item's lifecycle from then on,
 	// so AutoStop is off: the item must not be stopped twice.
+	//
+	// Reclaim: a lease is lost when a heartbeat times out on our side but
+	// reaches the server, so the next heartbeat's precondition fails and
+	// the SDK releases the item without stopping it (it cannot know whether
+	// another worker now holds it). The session then sits with a tool call
+	// nobody will answer. Asking the poll to reclaim items whose lease has
+	// gone unheartbeated past the TTL lets this worker, or the next one,
+	// pick the session up where it stopped.
 	poller := environments.NewWorkPoller(ctx, client, environments.WorkPollerOptions{
-		EnvironmentID:  o.EnvironmentID,
-		EnvironmentKey: o.EnvironmentKey,
-		AutoStop:       param.NewOpt(false),
-		Logger:         log,
+		EnvironmentID:      o.EnvironmentID,
+		EnvironmentKey:     o.EnvironmentKey,
+		AutoStop:           param.NewOpt(false),
+		ReclaimOlderThanMs: param.NewOpt(int64(o.ReclaimAfter / time.Millisecond)),
+		Logger:             log,
 	})
 	defer poller.Close()
 
