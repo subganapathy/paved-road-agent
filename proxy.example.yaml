@@ -16,7 +16,9 @@ slots:
     kind: promql
     endpoint: http://127.0.0.1:9090      # port-forwarded from the kind cluster in M2
     auth: none
-  dns: true                              # resolve names from the proxy's network; the first hop off-cluster
+  dns:                                   # the first hop off-cluster; resolves as clients would
+    enabled: true
+    resolver: ""                         # host:port of an internal nameserver, else the proxy host's
   cloud:
     gcp:
       projects: [vikrant-platform]       # the projects cloud_get may read

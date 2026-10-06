@@ -16,7 +16,17 @@ type dnsSlot struct {
 	resolver *net.Resolver
 }
 
-func newDNS() *dnsSlot { return &dnsSlot{resolver: net.DefaultResolver} }
+func newDNS(cfg *DNSSlot) *dnsSlot {
+	d := &dnsSlot{resolver: net.DefaultResolver}
+	if cfg != nil && cfg.Resolver != "" {
+		addr := cfg.Resolver
+		d.resolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, addr)
+		}}
+	}
+	return d
+}
 
 // Resolved is what a name resolves to, as the client would see it.
 type Resolved struct {

@@ -50,8 +50,8 @@ func New(cfg *Config, log *slog.Logger) (*Server, error) {
 			return nil, err
 		}
 	}
-	if cfg.Slots.DNS == nil || *cfg.Slots.DNS {
-		s.dns = newDNS()
+	if cfg.Slots.DNS == nil || cfg.Slots.DNS.Enabled == nil || *cfg.Slots.DNS.Enabled {
+		s.dns = newDNS(cfg.Slots.DNS)
 	}
 	s.routes()
 	return s, nil
