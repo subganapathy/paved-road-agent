@@ -1,0 +1,58 @@
+verdict: BLOCKING
+Verdict: blocking, on correctness. The change is well-tested and load/security/availability-neutral, but the one caller it could break — the dev traffic generator — has no discoverable source in the org, so the self-added discover.yaml claim that it 'never sends blank names' is an unverified assumption authored by this same PR. Separately (warning): the canary analysis ignores InvalidArgument so a total-rejection regression would auto-promote, and the e2e suite's own simulated caller sends an empty name yet both its reach and no-errors checks would still pass green, meaning no automated gate in this pipeline would catch this change being wrong about its one real caller.
+
+worst case: hello.v1.HelloService/Hello is the service's only method. After this change every request whose `name` is empty or all-whitespace gets `InvalidArgument` (gRPC code 3) instead of `hello `. If any deployed caller sends such a name — today the only caller measured is source_workload=traffic in namespace frontend, spiffe://cluster.local/ns/frontend/sa/frontend, 1.77-3.1 rps in cluster e1-dev — then 100% of that caller's calls to the service's only method fail, i.e. a total functional outage of hello as seen by that caller. Containment: the fleet has exactly one cluster (fleet: e1-dev, env=dev); hello is ClusterIP only (exposure query: services hello and hello-canary, both ClusterIP), 1 ready instance, no prod cluster exists, no firing alerts, no human end users behind the measured caller. Blast radius is therefore one internal dev service path, but it is that service's entire function, and the promote workflow carries the same digest onward to any environment added later. Two amplifiers to check: the Argo Rollouts analysis gate only counts Unknown|Internal|DataLoss|DeadlineExceeded, so an InvalidArgument storm would not stop the canary; and the e2e probe sends an all-default (empty) request, so the suite may stay green while every call is rejected. (reduced proof)
+
+stack:
+  mesh:       istio 1.31.1 sidecar mesh, strict mTLS
+  deploy:     Argo CD + Argo Rollouts canary with AnalysisTemplate server-errors
+  admission:  pod security admission enforce=restricted, no policy engine
+  autoscaler: KEDA on in-flight RPCs via generated HPA, floor 1 ceiling 2
+  metrics:    prometheus-compatible, vikrant_* families, no alerting rules
+
+properties:
+  correct                  blocking The only measured caller's traffic generator is not found anywhere in the org, so whether it sends blank names cannot be established; the self-added discover.yaml answer claiming 'no' is authored by this very PR and is unverified.
+  reversible               info     Pure in-memory logic change, no stored state or schema touched; mixed stable/canary pods briefly disagree on one edge case, which is expected canary behaviour and self-heals in the 10-minute rollout window.
+  within_budget            info     No new calls or fan-out; the rejected path does strictly less work than before.
+  stable_under_failure     info     InvalidArgument is outside the VirtualService's retryOn set and the canonical client sets no retry policy, so a blank-name rejection fails fast and is never amplified by mesh or client retries.
+  progressively_delivered  warning  The canary AnalysisTemplate's failure query only counts Unknown|Internal|DataLoss|DeadlineExceeded, excluding InvalidArgument, so a 100%-rejection regression would pass both canary steps and auto-promote to full weight within 10 minutes.
+  available                info     Diff touches only internal/handlers/*.go; no manifest, probe, resource, securityContext or PDB change, so admission, scheduling and disruption posture are unaffected.
+  secure                   info     Static error message does not echo caller input; no new data path, permission, or secret; mesh/authz objects untouched and current denials are 0.
+  observable               warning  vikrant_rpcs_handled_total carries a code label so the regression would be visible in the errors query, but the metrics backend has no alerting rules and there is no flag to disable the new validation without a rebuild and resync.
+  proven                   warning  Unit tests cover both new branches, but the e2e suite's own simulated frontend caller (the probe, which sends an all-default empty request) would still pass 'reach' and 'no-errors' checks after this change because their matchers do not treat InvalidArgument as failure — the pipeline stays green on a service rejecting 100% of its tested calls.
+
+[blocking] correct (confidence 0.60)
+  The dev traffic generator (source_workload=traffic, sa frontend, 1.7-3.1 rps in e1-dev) is not found in any of the org's 7 repositories, and the real smallStepGiantLeap/frontend service's own code does not call Hello at all (its only handler, Home, is Unimplemented) — so the identity of the one caller whose input could become InvalidArgument is unverified.
+  evidence (config): org-finder search for traffic/loadgen workload across smallStepGiantLeap org = repos: hello, pra-client, pra-infra, frontend, greeter, echo, ledger — none match; frontend/internal/handlers/frontend_service.go imple...
+  evidence (diff): .paved-agent/discover.yaml added answer line = traffic_generator_sends_blank_names: no — added by this PR itself, not corroborated by the generator's own source
+  recommend: Locate and inspect the actual traffic generator's manifest/source (or the pra-client fixture, not yet mounted) before trusting that it never sends a blank name; until then this is an unverified assumption underpinning the change's safety for its only current caller.
+
+[warning] correct (confidence 0.90)
+  The old-input test case `"" -> "hello "` was deleted rather than kept as a documented break, and the PR description does not mention the deleted case, the discover.yaml edit, or the e2e-masking effect found below.
+  evidence (diff): internal/handlers/hello_service_test.go removed map entry = `"": "hello "` removed, replaced by `" Ada ": "hello Ada"`
+  recommend: State in the PR description that this intentionally changes behaviour for blank-name input, and that it edits .paved-agent/discover.yaml.
+
+[warning] progressively_delivered (confidence 0.90)
+  Argo Rollouts AnalysisTemplate `server-errors` successCondition only fails on codes Unknown|Internal|DataLoss|DeadlineExceeded (failureLimit 1), so a total InvalidArgument-rejection regression on this caller would not halt the canary at 10% or 50% and would auto-promote to 100% weight after the two 5-minute pauses.
+  evidence (config): deploy/base/rollout.yaml AnalysisTemplate server-errors spec.metrics[0].provider.prometheus.query = code=~"Unknown|Internal|DataLoss|DeadlineExceeded"
+  recommend: Either confirm InvalidArgument storms are an acceptable gap in this gate, or add client-error ratio to the analysis before relying on canary to catch a business-logic regression like this one.
+
+[warning] observable (confidence 0.80)
+  The stack has no alerting rules (measured ALERTS query empty; discover.yaml stack.metrics states 'no alerting rules') and the change adds no flag, so a rejection storm would be visible only to someone manually querying vikrant_rpcs_handled_total{code="InvalidArgument"}, and reverting needs a full rebuild, new digest and Argo CD sync.
+  evidence (metric): discover.yaml measure.errors / measure.alerts ALERTS{alertstate="firing",namespace="hello"} = no data
+  recommend: No action required for this change's size, but note the gap for any future validation change on this path.
+
+[warning] proven (confidence 0.85)
+  e2e's own simulated frontend caller is `probe`, which calls Hello with an all-default (empty) request; after this change `probe`'s CODE becomes InvalidArgument, yet the `reach` check at e2e/run.sh:339 and the `no-errors` check at e2e/run.sh:359 both still pass, because `matches()` accepts any code except PermissionDenied|Unavailable|DeadlineExceeded for `reach`, and `tally()`'s `failure` list (e2e/probe/main.go) excludes InvalidArgument.
+  evidence (config): e2e/probe/main.go unary call body / failure list = cc.Invoke(ctx, method, &emptypb.Empty{}, ...); failure = [Unavailable, DeadlineExceeded, Internal, Unknown, Canceled]
+  evidence (config): e2e/run.sh matches() cases reach / no-errors; lines 339, 359 = reach: CODE* not in (PermissionDenied|Unavailable|DeadlineExceeded); no-errors: LOOP ... failed=0
+  recommend: Add InvalidArgument to the e2e failure/denial vocabulary for this method, or add an explicit e2e assertion that a non-empty name still succeeds, so a total-rejection regression on the real contract is caught before merge.
+
+unknown: Whether the dev-cluster traffic generator (source_workload=traffic, sa frontend, the only measured caller of Hello) can send an empty or whitespace-only name (blocks correct); tried: org-finder: listed all 7 org repos, grepped frontend and pra-infra for traffic/HelloRequest/hello.v1 references, org-wide code search for 'source_workload=traffic' and 'HelloRequest' (0 hits); did not mount pra-client (4th mount, over the 3-mount budget) — described only as an unrelated evaluation fixture
+
+QUESTION q1 (blocks correct):
+  Has anyone inspected the dev traffic generator's own manifest or source (not this PR's self-added answer) and confirmed it never sends an empty or whitespace-only name to hello.v1.HelloService/Hello?
+  if yes → write to .paved-agent/discover.yaml:
+      - {question: traffic_generator_sends_blank_names, answer: "yes", detail: "confirmed by reading <repo>/<path> at <ref>: the generator always sends <hardcoded/generated value>, never blank"}
+  if no → write to .paved-agent/discover.yaml:
+      - {question: traffic_generator_sends_blank_names, answer: "no", detail: "the generator can send an empty or whitespace-only name under <condition>; this change would turn those calls into InvalidArgument in production"}

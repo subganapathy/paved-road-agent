@@ -1,0 +1,57 @@
+verdict: WARNING
+No blocking issue: hello has no real production caller today (service.yaml says so; frontend's Home handler is Unimplemented and never builds a HelloRequest), so the behavior change from 'hello '→InvalidArgument for blank names breaks nobody deployed. Two warnings stand: the canary's AnalysisTemplate excludes InvalidArgument from its error-ratio query, so a bad regression here would promote undetected; and there's no alert on the new error code plus thin test coverage (literal "" untested, e2e blind to the status code).
+
+worst case: Every `hello.v1.HelloService/Hello` call whose `name` is empty or whitespace, which previously succeeded with `"hello "`, now fails with gRPC `InvalidArgument` (code 3). Blast radius as measured: one cluster, `e1-dev`, one ready pod (instances query: {cluster=e1-dev} 1), service type ClusterIP only (exposure query: hello, hello-canary both ClusterIP — nothing reachable from outside the cluster), and exactly one caller, workload `traffic` in namespace `frontend` under principal spiffe://cluster.local/ns/frontend/sa/frontend at ~1.5 rps (callers query). No prod or staging instance appears in any measured series, and discover.yaml answers record staging_exists=no. So the realistic worst case is: the single internal traffic generator (and, later, the real `frontend` service listed in service.yaml authorizedCallers) starts receiving code 3 on blank-name requests; because the canary AnalysisTemplate `server-errors` (deploy/base/rollout.yaml) counts only code=~"Unknown|Internal|DataLoss|DeadlineExceeded", a 100%-InvalidArgument regression would not fail the canary gate and, with no alerting rules in the metrics stack (discover.yaml stack.metrics), nothing would page. Secondary worst case: if CI's e2e probe or the toxic-client conformance suite asserts the old empty-name response, the change never ships (red CI) rather than breaking production. (reduced proof)
+
+stack:
+  mesh:       Istio 1.31.1 sidecar mesh, strict mTLS
+  deploy:     Argo CD + Argo Rollouts canary with AnalysisTemplate server-errors
+  admission:  PSS enforce=restricted, no policy engine
+  autoscaler: KEDA ScaledObject on vikrant_inflight_rpcs, min 3/max 10 (base), e1-dev measured ceiling=2/floor=1
+  metrics:    prometheus-compatible, vikrant_* families, no alerting rules configured
+
+properties:
+  correct                  info     Trim+reject is not constrained by any documented contract (proto has no validation note, README silent), status/codes packages are already satisfied by go.mod's existing grpc v1.84.0 dependency, and the change touches only service-team-owned files so check-stamp/check-generated are unaffected.
+  reversible               info     No stored state, proto, or config format changes; service.yaml itself states hello has no real callers yet, and frontend's own code (confirmed) never constructs a HelloRequest — the only observed caller is a synthetic dev traffic generator, so no deployed caller depends on the old 'hello ' response for blank input.
+  within_budget            info     Adds no outbound call or fan-out; trimming and early-return reduce work on the rejected path; current headroom (ceiling=2, desired=1, inflight=0, p99=65.9ms) is irrelevant since load is unaffected.
+  stable_under_failure     info     InvalidArgument is absent from both VirtualService retryOn sets (idempotent and primary routes) and the client has no service-config retryPolicy (client/client_test.go asserts none), so the new error cannot be amplified into a retry storm.
+  progressively_delivered  warning  The canary AnalysisTemplate server-errors (deploy/base/rollout.yaml, second document) filters code=~"Unknown|Internal|DataLoss|DeadlineExceeded" only, excluding InvalidArgument, so a regression that turned all Hello traffic into code 3 would sail through every analysis step and promote to 100% undetected by the gate.
+  available                info     No manifest, probe, resource, or security-context change in this diff; PDB, spread and admission settings are untouched.
+  secure                   info     The rejection path logs/returns only the constant string "name is required", never req.GetName(), so no caller-supplied value is exposed; no permission or authz change.
+  observable               warning  vikrant_rpcs_handled_total already labels by code so InvalidArgument becomes visible to the measured errors query, but no alerting rule exists in this metrics backend (measured alerts query empty) and there is no flag to revert the validation without a redeploy.
+  proven                   warning  The unit tests cover trimming and a whitespace-only rejection, but the literal empty string "" is no longer exercised on either path, no end-to-end test asserts the business behaviour of a blank name (the probe's 'reach'/'no-errors' matchers are blind to InvalidArgument), and client/client_test.go and frontend never exercise HelloRequest at all.
+
+[info] reversible (confidence 0.85)
+  hello has no production caller to break: service.yaml's own header states "Nobody may call it yet", and smallStepGiantLeap/frontend's only handler (Home) is Unimplemented with zero references to hellov1/HelloRequest anywhere in its repo.
+  evidence (config): hello repo service.yaml line 1 = "service.yaml for hello, owned by the hello team. Nobody may call it yet."
+  evidence (doc): org-finder on smallStepGiantLeap/frontend grep -rn HelloRequest|hellov1|NewHelloServiceClient = zero hits; Home RPC returns codes.Unimplemented
+  evidence (metric): measured callers query (discover.yaml) = only source_workload=traffic under frontend's service account, documented in discover.yaml answers as a synthetic load generator
+  recommend: None required; if a future frontend revision implements Home and calls Hello, re-check whether it can send blank names.
+
+[warning] progressively_delivered (confidence 0.90)
+  The canary's only automated judgment, the server-error-ratio AnalysisTemplate, excludes code 3 (InvalidArgument), so this behavior change is not gated by the staged rollout the platform provides.
+  evidence (config): deploy/base/rollout.yaml AnalysisTemplate server-errors, prometheus.query = code=~"Unknown|Internal|DataLoss|DeadlineExceeded" — InvalidArgument absent
+  recommend: Accept as a known gap for business-logic error codes, or extend the AnalysisTemplate (platform-owned, regenerated from service.yaml) to also watch a business-error ratio before relying on canary to catch future contract changes like this one.
+
+[warning] observable (confidence 0.80)
+  No alert watches vikrant_rpcs_handled_total{code="InvalidArgument"}, so a caller-visible spike in rejections (e.g. a buggy upstream sending blank names) would page nobody.
+  evidence (metric): measured alerts query ALERTS{alertstate="firing",namespace="hello"} = no data (empty)
+  evidence (config): .paved-agent/discover.yaml stack.metrics.is = "...no alerting rules"
+  recommend: If/when hello gets a real caller, add an alert on the InvalidArgument rate for Hello, or at minimum document this failure mode in the service's runbook.
+
+[warning] proven (confidence 0.75)
+  The new table-test drops the literal empty string "" entirely (it tests " " for rejection and "  Ada " for trimming), and no end-to-end test observes the business behaviour: the e2e probe's `reach`/`no-errors` matchers treat InvalidArgument the same as OK.
+  evidence (diff): internal/handlers/hello_service_test.go = map keys "Subramanian"/" Ada " and a single " " case in TestHelloRejectsEmptyName; literal "" untested
+  evidence (config): e2e/run.sh matches() reach/no-errors cases = reach: any CODE not PermissionDenied|Unavailable|DeadlineExceeded passes; no-errors: failure list is Unavailable,DeadlineExceeded,Interna...
+  recommend: Add a literal "" case to the table test for completeness; note for future contract changes that e2e cannot catch business-logic status-code regressions as currently written.
+
+unknown: Whether the synthetic traffic generator (workload 'traffic', frontend namespace/SA) ever sends a blank or whitespace-only name, which would turn its requests from 200 to InvalidArgument in dev metrics. (blocks reversible); tried: org-finder searched smallStepGiantLeap/frontend (the declared identity) and found no HelloRequest construction there at all, i.e. the generator is not frontend's own code
+
+QUESTION q1 (blocks reversible):
+  Does the dev traffic generator (workload 'traffic', running under spiffe://cluster.local/ns/frontend/sa/frontend) ever send an empty or whitespace-only name to Hello?
+  if yes → write to .paved-agent/discover.yaml:
+    answers:
+      - {question: traffic_generator_sends_blank_names, answer: "yes", detail: "the dev traffic generator (workload traffic, ns frontend) sends blank/whitespace names and will now see InvalidArgument instead of 200 for those calls"}
+  if no → write to .paved-agent/discover.yaml:
+    answers:
+      - {question: traffic_generator_sends_blank_names, answer: "no", detail: "the dev traffic generator always sends a non-empty name; this change cannot affect its traffic"}

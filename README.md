@@ -91,6 +91,14 @@ GitHub ── pull_request / issue_comment ──▶ change-agent serve (your cl
   spending turns finding them: the same repository cost $2.83 to review
   bare and $0.12 once the file existed.
 - **No public URL?** `serve --poll 60s` polls open PRs instead.
+- **It has run.** [evals/runs/2026-10-06-hello3-webhook](evals/runs/2026-10-06-hello3-webhook)
+  is the loop end to end on a real PR: review → status pending with a
+  question → a human's `no` on the thread → the file committed to the
+  branch → re-review → `impact: success`. It also records what only a
+  live run finds: the re-review saw the recorded answer arrive *inside
+  the PR* and, quite reasonably, refused to let a PR certify itself —
+  so answers now carry their provenance (who replied, which commit), and
+  the lead treats them as facts with a named source.
 
 ## The sandbox
 

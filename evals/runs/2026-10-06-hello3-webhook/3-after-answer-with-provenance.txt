@@ -1,0 +1,52 @@
+verdict: WARNING
+No blocking issue: no deployed caller (frontend has no call site to hello at all) can hit the new InvalidArgument path, retries/mesh don't amplify it, and the e2e/CI gates will pass. Two warnings drive the verdict: the canary's AnalysisTemplate ignores InvalidArgument so a real regression would silently promote to 100%, and the same blind spot means e2e no longer exercises a single successful Hello call, with no alert on the new error class either.
+
+worst case: hello.v1.HelloService/Hello now returns InvalidArgument (gRPC code 3) for any request whose name is empty or whitespace-only, where it previously returned OK with the message "hello ". If a deployed caller ever sends such a request, that call path breaks — the caller sees a non-retryable error instead of a 200. Blast radius is bounded: the fleet has exactly one cluster, e1-dev (fleet: {"id":"e1-dev","env":"dev"}); there is no staging and no prod cluster (recorded answer staging_exists="no"; deploy/envs/prod exists but no prod cluster is in the fleet); hello is ClusterIP only with no external exposure (measure exposure: two ClusterIP services, hello and hello-canary); the only measured caller is source_workload=traffic under spiffe://cluster.local/ns/frontend/sa/frontend at 2.19 rps over 1h, 3.22 rps at response_code=200, with one ready pod and an HPA ceiling of 2. Second, smaller worst case: the change breaks CI's own gates (make test / e2e/run.sh), so it never ships at all. Third: a real rise in InvalidArgument is invisible to the canary analysis, which counts only Unknown|Internal|DataLoss|DeadlineExceeded (deploy/base/rollout.yaml AnalysisTemplate server-errors), and to alerting, which does not exist (discover.yaml stack.metrics: "no alerting rules"; ALERTS query returned no data). (reduced proof)
+
+stack:
+  mesh:       istio 1.31.1 strict mTLS sidecar
+  deploy:     Argo CD + Argo Rollouts canary (10%/pause5m/50%/pause5m) with AnalysisTemplate server-errors
+  admission:  PSS restricted, no general policy engine
+  autoscaler: KEDA scaling on in-flight RPCs, ceiling=2, floor=1
+  metrics:    vikrant_* prometheus families, no alerting rules
+
+properties:
+  correct                  info     No contract documents an empty name as valid, no deployed caller sends one (frontend's Home handler is Unimplemented and makes no call to hello; dev traffic generator confirmed non-blank), and .paved-agent/discover.yaml is not platform-owned so check-stamp is unaffected; the description omits a second, minor behavior change (internal padding is now also trimmed from the success path).
+  reversible               info     No proto, persisted data, or config schema changes; purely additive behavior change, rollback is a plain image revert with no migration.
+  within_budget            info     No outbound calls added; the rejected path does less work than before; no load added to any dependency.
+  stable_under_failure     info     InvalidArgument is excluded from both the mesh's idempotent-route retryOn and the client's absent retry policy, so no amplification is possible.
+  progressively_delivered  warning  Canary rollout exists but its AnalysisTemplate server-errors query only counts code=~Unknown|Internal|DataLoss|DeadlineExceeded, excluding InvalidArgument — a surge of rejected requests would promote through 10%→50%→100% undetected; only a human watching vikrant_rpcs_handled_total{code="InvalidArgument"} would catch it, and no alert exists.
+  available                info     No manifest, resource, probe or PDB touched; readiness/liveness use the gRPC health service, not Hello, so rejections cannot affect rotation.
+  secure                   info     No new data, field, log line or permission; error message is a constant and does not echo caller input; authorizedCallers/ingress/egress unchanged.
+  observable               warning  The rejection is countable (vikrant_rpcs_handled_total{code="InvalidArgument"}, discover.yaml measure.errors) but no alert rule or dashboard watches it (stack.metrics: 'no alerting rules'; measured ALERTS empty), and there is no runtime off switch short of an image revert — acceptable only because the worst case is dev-only, single-instance, internal.
+  proven                   warning  e2e's reachability check ('reach') and the node-drain 'no-errors' tally both still pass with InvalidArgument responses (neither matches() nor the probe's failure set treats InvalidArgument as a failure), so after this change hello's in-cluster e2e no longer exercises a single successful Hello call at all — a real regression in test coverage that CI will not catch; unit tests cover the new branches but go test could not be executed in this sandbox (no Go toolchain) to confirm `make test` passes.
+
+[info] correct (confidence 0.90)
+  frontend, the only authorizedCaller (service.yaml authorizedCallers: smallStepGiantLeap/frontend), has no call site to hello.v1.HelloService/Hello in its code at all — its Home handler returns Unimplemented and never dials hello — so no production code path can send a blank name.
+  evidence (doc): org-finder on smallStepGiantLeap/frontend grep -rni hello across frontend repo = zero hits in any .go file; internal/handlers/frontend_service.go:22-25 Home returns codes.Unimplemented
+  recommend: None required; note for future review once frontend implements the call.
+
+[warning] correct (confidence 0.80)
+  The description says 'trim the name' but the diff also changes the success path for any caller that sends padded whitespace: '  Ada ' now yields 'hello Ada' instead of the previous literal 'hello   Ada '.
+  evidence (diff): internal/handlers/hello_service.go:25-31 strings.TrimSpace(req.GetName()) = trim applies before greeting() on the success path too
+  recommend: Call out the padding-trim as an explicit, separate behavior change in the description.
+
+[info] correct (confidence 0.95)
+  The PR edits internal/handlers/ (team-owned per README) and .paved-agent/discover.yaml, neither of which appears in .platform/sha256sums, so CI's check-stamp will not reject this PR.
+  evidence (config): .platform/sha256sums grep for handlers or discover.yaml = absent; only platform-owned files listed
+  recommend: None.
+
+[warning] progressively_delivered (confidence 0.90)
+  AnalysisTemplate server-errors' prometheus query filters code=~"Unknown|Internal|DataLoss|DeadlineExceeded", which excludes InvalidArgument, so a surge of rejected Hello calls would pass analysis at every canary step (10%, 50%) and reach 100%.
+  evidence (config): deploy/base/rollout.yaml AnalysisTemplate server-errors metrics[0].provider.prometheus.query = code=~"Unknown|Internal|DataLoss|DeadlineExceeded"
+  recommend: Widen the analysis query to include client-error codes relevant to business logic, or accept that this class of regression needs a human watching the InvalidArgument series during rollout.
+
+[warning] proven (confidence 0.85)
+  e2e's reachability check ('CODE InvalidArgument' matches expectation 'reach' since only PermissionDenied|Unavailable|DeadlineExceeded are excluded) and drain_under_load's no-errors tally (InvalidArgument is absent from the probe's failure=[Unavailable,DeadlineExceeded,Internal,Unknown,Canceled] list) both still PASS, so the in-cluster e2e no longer actually proves a successful Hello call exists after this change.
+  evidence (diff): e2e/run.sh matches() 'reach' case; e2e/probe/main.go var failure = InvalidArgument excluded from both exclusion lists
+  recommend: Add an e2e or unit assertion that an authorized caller sending a non-empty name still gets CODE OK with the expected message, since the probe's emptypb.Empty{} always sends name="".
+
+[warning] observable (confidence 0.85)
+  The rejection is countable via vikrant_rpcs_handled_total{code="InvalidArgument"} but no alert rule exists (stack.metrics.is: 'no alerting rules'; measured ALERTS{alertstate="firing",namespace="hello"} returned no data) and there is no flag to disable the new check without a deploy.
+  evidence (metric): measured facts ALERTS{alertstate="firing",namespace="hello"} = no data (empty result)
+  recommend: Acceptable for a dev-only, single-instance, internal-only change; revisit before this path is ever exposed outside dev or to external callers.

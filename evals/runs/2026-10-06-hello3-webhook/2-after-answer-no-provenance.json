@@ -1,0 +1,297 @@
+{
+  "change": "smallStepGiantLeap/hello#3@adf776c79637",
+  "instantiation": {
+    "worst_case": "hello.v1.HelloService/Hello is the service's only method. After this change every request whose `name` is empty or all-whitespace gets `InvalidArgument` (gRPC code 3) instead of `hello `. If any deployed caller sends such a name — today the only caller measured is source_workload=traffic in namespace frontend, spiffe://cluster.local/ns/frontend/sa/frontend, 1.77-3.1 rps in cluster e1-dev — then 100% of that caller's calls to the service's only method fail, i.e. a total functional outage of hello as seen by that caller. Containment: the fleet has exactly one cluster (fleet: e1-dev, env=dev); hello is ClusterIP only (exposure query: services hello and hello-canary, both ClusterIP), 1 ready instance, no prod cluster exists, no firing alerts, no human end users behind the measured caller. Blast radius is therefore one internal dev service path, but it is that service's entire function, and the promote workflow carries the same digest onward to any environment added later. Two amplifiers to check: the Argo Rollouts analysis gate only counts Unknown|Internal|DataLoss|DeadlineExceeded, so an InvalidArgument storm would not stop the canary; and the e2e probe sends an all-default (empty) request, so the suite may stay green while every call is rejected.",
+    "proportionality": "reduced",
+    "obligations": [
+      {
+        "property": "correct",
+        "establish": "Establish whether any deployed caller of hello.v1.HelloService/Hello sends an empty or whitespace-only `name`, and what it does with code 3. The only caller measured is source_workload=traffic / sa frontend in e1-dev; service.yaml authorizes smallStepGiantLeap/frontend for this method. Get the traffic generator's actual manifest/args/image (namespace frontend, cluster e1-dev) and, if a real frontend service exists in the org, its call site, and state whether the name it sends can be empty (unset proto3 string defaults to \"\"). Do NOT accept as evidence the answer added by this same PR to .paved-agent/discover.yaml (`traffic_generator_sends_blank_names: no`) — that line is authored by the change under review and asserts the review's conclusion; it must be corroborated by the generator's own manifest or source, and if it cannot be, the answer stands unverified.",
+        "evidence": "topology: the traffic workload in namespace frontend, cluster e1-dev — pod spec args/env and image; org-finder: the repository holding that load generator and/or smallStepGiantLeap/frontend, the code that builds hellov1.HelloRequest; repo: service.yaml spec.authorizedCallers; .paved-agent/discover.yaml answers (treat as PR-authored claim, not fact)",
+        "if_not": "blocking"
+      },
+      {
+        "property": "correct",
+        "establish": "Establish that the contract permits rejecting a blank name: proto/hello/v1/hello.proto declares `string name = 1` with no validation and the method comment says only 'answers \"hello \u003cname\u003e\"'; README.md and the proto document no required-field rule. Confirm there is no documented decision in the repository's referenced docs (docs: README.md) that an empty name must return OK, and confirm the PR description matches the diff (it does claim trim + InvalidArgument; the diff also silently deletes the existing `\"\" -\u003e \"hello \"` table case and edits .paved-agent/discover.yaml, neither mentioned in the description).",
+        "evidence": "repo files at adf776c7: proto/hello/v1/hello.proto lines 7-11; README.md; internal/handlers/hello_service.go:24-29; internal/handlers/hello_service_test.go:12 (removed case)",
+        "if_not": "warning"
+      },
+      {
+        "property": "correct",
+        "establish": "Establish that CI accepts the edit to .paved-agent/discover.yaml: README.md says `check-stamp` fails if a platform-owned file is edited by hand, and lists which paths the platform owns. Confirm .paved-agent/ is not in the platform-owned set (Makefile check-stamp target / .platform/sha256sums), so the push does not fail the `test` job outright.",
+        "evidence": ".platform/sha256sums; Makefile (check-stamp target); .github/workflows/ci.yaml job `test`; README.md ownership table",
+        "if_not": "warning"
+      },
+      {
+        "property": "reversible",
+        "establish": "Establish that the change is behaviourally reversible and safe in mixed versions: it persists nothing, changes no stored format, no schema, no configuration key, and no wire contract field — only the status code returned for one input class. Confirm that during the canary (rollout.yaml steps setWeight 10 then 50) the same blank-name request gets OK from stable pods and InvalidArgument from canary pods, and that a caller that treats code 3 as permanent would see non-deterministic behaviour for the duration; and that reverting the commit restores the old behaviour with no cleanup (nothing written by the new version).",
+        "evidence": "diff of internal/handlers/hello_service.go (no I/O, no state); deploy/base/rollout.yaml strategy.canary.steps; deploy/base/mesh/virtual-service.yaml route weights hello/hello-canary",
+        "if_not": "info"
+      },
+      {
+        "property": "within_budget",
+        "establish": "Show the change is load-neutral: it adds no outbound call, no fan-out, no query, and shortens the work per request (TrimSpace + early return). Confirm against measured load that nothing changes for any dependency — hello has no downstream dependencies in cmd/hello/main.go, inflight unary=0, rps 3.1/s in e1-dev, memory limit 512Mi, HPA floor 1 ceiling 2.",
+        "evidence": "internal/handlers/hello_service.go (no new client calls); cmd/hello/main.go dependency wiring; measured: rps, inflight, limits, ceiling/floor queries for namespace hello",
+        "if_not": "info"
+      },
+      {
+        "property": "stable_under_failure",
+        "establish": "Establish that returning InvalidArgument cannot amplify load or sustain a failure: the VirtualService route `idempotent` retries only on connect-failure,refused-stream,unavailable (2 attempts), so code 3 is not retried by the mesh; and the canonical client's ServiceConfig (client/client.go:52) sets only a 10s timeout with no retryPolicy, so a rejected call is not retried client-side. Confirm no caller-side retry wrapper exists in whichever caller discovery identifies, i.e. a blank-name caller fails fast rather than hot-looping on code 3.",
+        "evidence": "deploy/base/mesh/virtual-service.yaml http[0].retries and http[1].retries; client/client.go ServiceConfig; the caller's call site found under the `correct` obligation",
+        "if_not": "warning"
+      },
+      {
+        "property": "progressively_delivered",
+        "establish": "Establish whether the paved road's gate can see this change's failure mode. The environment provides Argo Rollouts canary (owner query: owner_kind=Rollout, owner_name=hello) with steps 10% / pause 5m / 50% / pause 5m and AnalysisTemplate `server-errors`, whose Prometheus query counts only code=~\"Unknown|Internal|DataLoss|DeadlineExceeded\" over vikrant_rpcs_handled_total with failureLimit 1. Establish that code=InvalidArgument is excluded from that numerator, therefore a 100%-rejection regression would pass every analysis step and promote to full weight automatically; and establish the rollback path (git revert + Argo CD sync of deploy/envs/dev/image.yaml, or `kubectl argo rollouts abort`) and how long full weight takes to reach (10m of pauses).",
+        "evidence": "deploy/base/rollout.yaml: AnalysisTemplate server-errors spec.metrics[0].provider.prometheus.query and successCondition; rollout strategy.canary.steps; measured owner query (owner_kind=Rollout); .github/workflows/promote.yaml and deploy/envs/dev/image.yaml for the pin/rollback path; fleet (only e1-dev exists, so there is no earlier environment to catch it)",
+        "if_not": "warning"
+      },
+      {
+        "property": "available",
+        "establish": "Show it is unaffected: the diff touches only Go handler code and its test — no manifest, no probe, no resource request/limit, no securityContext, no PDB, no topology spread — so nothing changes for pod security admission (enforce=restricted), the PDB (expected_pods=1), or scheduling; the new code path allocates nothing unbounded and cannot crash (no panic path, no nil deref: req.GetName() is nil-safe).",
+        "evidence": "the diff's file list (internal/handlers/*.go only); deploy/base/rollout.yaml securityContext/probes/resources unchanged at head; deploy/base/pdb.yaml; measured: pdb, restarts, limits queries",
+        "if_not": "info"
+      },
+      {
+        "property": "secure",
+        "establish": "Show it is unaffected: no new data path, no new permission, no secret. Confirm the error message \"name is required\" echoes no caller input (it does not interpolate req.GetName()), so nothing sensitive is returned or logged, and that mTLS/authz objects are untouched (peer-authentication, authz-allow-frontend, NetworkPolicies unchanged; measured denials = 0).",
+        "evidence": "internal/handlers/hello_service.go:26 (static message); deploy/base/mesh/* and deploy/base/network/* unchanged by the diff; measured: denials, callers (source_principal spiffe://cluster.local/ns/frontend/sa/frontend)",
+        "if_not": "info"
+      },
+      {
+        "property": "observable",
+        "establish": "Establish that a blank-name rejection storm is visible and stoppable. Confirm the server interceptor records the gRPC status code as a label on vikrant_rpcs_handled_total so the discover.yaml `errors` query (sum by (cluster, code) ... code!=\"OK\") would show code=\"InvalidArgument\" rising from the measured baseline of no data. Then confirm whether anything watches it: the stack line says the metrics backend has no alerting rules and the measured ALERTS query is empty, so state plainly that nothing would page; and confirm there is no flag or dynamic configuration that disables the new validation — reverting requires a rebuild, a new digest and an Argo CD sync.",
+        "evidence": "internal/platform/server/interceptors.go and internal/platform/metrics/metrics.go (code label on vikrant_rpcs_handled_total); .paved-agent/discover.yaml stack.metrics (\"no alerting rules\") and measured `errors` and `alerts` queries; absence of any flag in internal/handlers/hello_service.go and cmd/hello/main.go",
+        "if_not": "warning"
+      },
+      {
+        "property": "proven",
+        "establish": "Establish what would catch this change being wrong. Unit tests cover both new branches (TestHelloRejectsEmptyName for \" \", TestHello for \"  Ada \"), but the old input \"\" -\u003e \"hello \" case was deleted rather than re-asserted, so no test records that the old contract was intentionally broken. Critically, establish whether the platform's e2e suite still proves the service answers: e2e/probe/main.go invokes the method with \u0026emptypb.Empty{} (name=\"\"), so every e2e call now returns InvalidArgument; the `reach` matcher in e2e/run.sh:227 accepts any CODE except PermissionDenied|Unavailable|DeadlineExceeded, and tally()'s `failure` list (probe/main.go:89) excludes InvalidArgument so the drain check's `failed=0` still holds. Confirm that the e2e job therefore passes green on a service that rejects 100% of calls, and say so as the finding: after this change no test in the pipeline distinguishes a working hello from a totally broken one.",
+        "evidence": "internal/handlers/hello_service_test.go (head); e2e/probe/main.go lines 80-85 and 89 (failure code list), tally(); e2e/run.sh lines 225-233 (matches) and 339-341, 359; .github/workflows/ci.yaml jobs test and e2e",
+        "if_not": "warning"
+      }
+    ]
+  },
+  "discovery": {
+    "stack": {
+      "admission": {
+        "is": "pod security admission enforce=restricted, no policy engine",
+        "evidence": "discover.yaml stack.admission; diff touches no manifest"
+      },
+      "autoscaler": {
+        "is": "KEDA on in-flight RPCs via generated HPA, floor 1 ceiling 2",
+        "evidence": "measured ceiling=2, floor=1"
+      },
+      "deploy": {
+        "is": "Argo CD + Argo Rollouts canary with AnalysisTemplate server-errors",
+        "evidence": "deploy/base/rollout.yaml; measured owner query owner_kind=Rollout"
+      },
+      "mesh": {
+        "is": "istio 1.31.1 sidecar mesh, strict mTLS",
+        "evidence": "discover.yaml stack.mesh; deploy/base/mesh/* unchanged by diff"
+      },
+      "metrics": {
+        "is": "prometheus-compatible, vikrant_* families, no alerting rules",
+        "evidence": "discover.yaml stack.metrics; measured alerts query empty"
+      }
+    },
+    "verified": [
+      "owner_kind=Rollout (deploy)",
+      "ALERTS empty + stack.metrics 'no alerting rules' (metrics)"
+    ],
+    "broken": [],
+    "by_env": {
+      "dev": {
+        "clusters": [
+          "e1-dev"
+        ],
+        "instances": 1,
+        "rps": 3.15,
+        "callers": [
+          "frontend/frontend (spiffe://cluster.local/ns/frontend/sa/frontend, source_workload=traffic)"
+        ],
+        "external": false
+      }
+    }
+  },
+  "properties": {
+    "available": {
+      "verdict": "info",
+      "summary": "Diff touches only internal/handlers/*.go; no manifest, probe, resource, securityContext or PDB change, so admission, scheduling and disruption posture are unaffected."
+    },
+    "correct": {
+      "verdict": "blocking",
+      "summary": "The only measured caller's traffic generator is not found anywhere in the org, so whether it sends blank names cannot be established; the self-added discover.yaml answer claiming 'no' is authored by this very PR and is unverified."
+    },
+    "observable": {
+      "verdict": "warning",
+      "summary": "vikrant_rpcs_handled_total carries a code label so the regression would be visible in the errors query, but the metrics backend has no alerting rules and there is no flag to disable the new validation without a rebuild and resync."
+    },
+    "progressively_delivered": {
+      "verdict": "warning",
+      "summary": "The canary AnalysisTemplate's failure query only counts Unknown|Internal|DataLoss|DeadlineExceeded, excluding InvalidArgument, so a 100%-rejection regression would pass both canary steps and auto-promote to full weight within 10 minutes."
+    },
+    "proven": {
+      "verdict": "warning",
+      "summary": "Unit tests cover both new branches, but the e2e suite's own simulated frontend caller (the probe, which sends an all-default empty request) would still pass 'reach' and 'no-errors' checks after this change because their matchers do not treat InvalidArgument as failure — the pipeline stays green on a service rejecting 100% of its tested calls."
+    },
+    "reversible": {
+      "verdict": "info",
+      "summary": "Pure in-memory logic change, no stored state or schema touched; mixed stable/canary pods briefly disagree on one edge case, which is expected canary behaviour and self-heals in the 10-minute rollout window."
+    },
+    "secure": {
+      "verdict": "info",
+      "summary": "Static error message does not echo caller input; no new data path, permission, or secret; mesh/authz objects untouched and current denials are 0."
+    },
+    "stable_under_failure": {
+      "verdict": "info",
+      "summary": "InvalidArgument is outside the VirtualService's retryOn set and the canonical client sets no retry policy, so a blank-name rejection fails fast and is never amplified by mesh or client retries."
+    },
+    "within_budget": {
+      "verdict": "info",
+      "summary": "No new calls or fan-out; the rejected path does strictly less work than before."
+    }
+  },
+  "findings": [
+    {
+      "property": "correct",
+      "severity": "blocking",
+      "claim": "The dev traffic generator (source_workload=traffic, sa frontend, 1.7-3.1 rps in e1-dev) is not found in any of the org's 7 repositories, and the real smallStepGiantLeap/frontend service's own code does not call Hello at all (its only handler, Home, is Unimplemented) — so the identity of the one caller whose input could become InvalidArgument is unverified.",
+      "evidence": [
+        {
+          "kind": "config",
+          "source": "org-finder",
+          "query": "search for traffic/loadgen workload across smallStepGiantLeap org",
+          "value": "repos: hello, pra-client, pra-infra, frontend, greeter, echo, ledger — none match; frontend/internal/handlers/frontend_service.go implements only Home -\u003e Unimplemented, no HelloRequest construction anywhere in frontend"
+        },
+        {
+          "kind": "diff",
+          "source": ".paved-agent/discover.yaml",
+          "query": "added answer line",
+          "value": "traffic_generator_sends_blank_names: no — added by this PR itself, not corroborated by the generator's own source"
+        }
+      ],
+      "recommendation": "Locate and inspect the actual traffic generator's manifest/source (or the pra-client fixture, not yet mounted) before trusting that it never sends a blank name; until then this is an unverified assumption underpinning the change's safety for its only current caller.",
+      "confidence": 0.6,
+      "studied": [
+        "frontend/service.yaml",
+        "frontend/internal/handlers/frontend_service.go",
+        "hello/.paved-agent/discover.yaml"
+      ]
+    },
+    {
+      "property": "correct",
+      "severity": "warning",
+      "claim": "The old-input test case `\"\" -\u003e \"hello \"` was deleted rather than kept as a documented break, and the PR description does not mention the deleted case, the discover.yaml edit, or the e2e-masking effect found below.",
+      "evidence": [
+        {
+          "kind": "diff",
+          "source": "internal/handlers/hello_service_test.go",
+          "query": "removed map entry",
+          "value": "`\"\": \"hello \"` removed, replaced by `\"  Ada \": \"hello Ada\"`"
+        }
+      ],
+      "recommendation": "State in the PR description that this intentionally changes behaviour for blank-name input, and that it edits .paved-agent/discover.yaml.",
+      "confidence": 0.9,
+      "studied": [
+        "internal/handlers/hello_service_test.go"
+      ]
+    },
+    {
+      "property": "progressively_delivered",
+      "severity": "warning",
+      "claim": "Argo Rollouts AnalysisTemplate `server-errors` successCondition only fails on codes Unknown|Internal|DataLoss|DeadlineExceeded (failureLimit 1), so a total InvalidArgument-rejection regression on this caller would not halt the canary at 10% or 50% and would auto-promote to 100% weight after the two 5-minute pauses.",
+      "evidence": [
+        {
+          "kind": "config",
+          "source": "deploy/base/rollout.yaml",
+          "query": "AnalysisTemplate server-errors spec.metrics[0].provider.prometheus.query",
+          "value": "code=~\"Unknown|Internal|DataLoss|DeadlineExceeded\""
+        }
+      ],
+      "recommendation": "Either confirm InvalidArgument storms are an acceptable gap in this gate, or add client-error ratio to the analysis before relying on canary to catch a business-logic regression like this one.",
+      "confidence": 0.9,
+      "studied": [
+        "deploy/base/rollout.yaml"
+      ]
+    },
+    {
+      "property": "observable",
+      "severity": "warning",
+      "claim": "The stack has no alerting rules (measured ALERTS query empty; discover.yaml stack.metrics states 'no alerting rules') and the change adds no flag, so a rejection storm would be visible only to someone manually querying vikrant_rpcs_handled_total{code=\"InvalidArgument\"}, and reverting needs a full rebuild, new digest and Argo CD sync.",
+      "evidence": [
+        {
+          "kind": "metric",
+          "source": "discover.yaml measure.errors / measure.alerts",
+          "query": "ALERTS{alertstate=\"firing\",namespace=\"hello\"}",
+          "value": "no data"
+        }
+      ],
+      "recommendation": "No action required for this change's size, but note the gap for any future validation change on this path.",
+      "confidence": 0.8,
+      "studied": [
+        "internal/platform/metrics/metrics.go",
+        ".paved-agent/discover.yaml"
+      ]
+    },
+    {
+      "property": "proven",
+      "severity": "warning",
+      "claim": "e2e's own simulated frontend caller is `probe`, which calls Hello with an all-default (empty) request; after this change `probe`'s CODE becomes InvalidArgument, yet the `reach` check at e2e/run.sh:339 and the `no-errors` check at e2e/run.sh:359 both still pass, because `matches()` accepts any code except PermissionDenied|Unavailable|DeadlineExceeded for `reach`, and `tally()`'s `failure` list (e2e/probe/main.go) excludes InvalidArgument.",
+      "evidence": [
+        {
+          "kind": "config",
+          "source": "e2e/probe/main.go",
+          "query": "unary call body / failure list",
+          "value": "cc.Invoke(ctx, method, \u0026emptypb.Empty{}, ...); failure = [Unavailable, DeadlineExceeded, Internal, Unknown, Canceled]"
+        },
+        {
+          "kind": "config",
+          "source": "e2e/run.sh",
+          "query": "matches() cases reach / no-errors; lines 339, 359",
+          "value": "reach: CODE* not in (PermissionDenied|Unavailable|DeadlineExceeded); no-errors: LOOP ... failed=0"
+        }
+      ],
+      "recommendation": "Add InvalidArgument to the e2e failure/denial vocabulary for this method, or add an explicit e2e assertion that a non-empty name still succeeds, so a total-rejection regression on the real contract is caught before merge.",
+      "confidence": 0.85,
+      "studied": [
+        "e2e/run.sh",
+        "e2e/probe/main.go"
+      ]
+    }
+  ],
+  "unknowns": [
+    {
+      "what": "Whether the dev-cluster traffic generator (source_workload=traffic, sa frontend, the only measured caller of Hello) can send an empty or whitespace-only name",
+      "tried": [
+        "org-finder: listed all 7 org repos, grepped frontend and pra-infra for traffic/HelloRequest/hello.v1 references, org-wide code search for 'source_workload=traffic' and 'HelloRequest' (0 hits)",
+        "did not mount pra-client (4th mount, over the 3-mount budget) — described only as an unrelated evaluation fixture"
+      ],
+      "blocks": [
+        "correct"
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Has anyone inspected the dev traffic generator's own manifest or source (not this PR's self-added answer) and confirmed it never sends an empty or whitespace-only name to hello.v1.HelloService/Hello?",
+      "blocks": [
+        "correct"
+      ],
+      "answers": {
+        "no": {
+          "path": ".paved-agent/discover.yaml",
+          "content": "  - {question: traffic_generator_sends_blank_names, answer: \"no\", detail: \"the generator can send an empty or whitespace-only name under \u003ccondition\u003e; this change would turn those calls into InvalidArgument in production\"}"
+        },
+        "yes": {
+          "path": ".paved-agent/discover.yaml",
+          "content": "  - {question: traffic_generator_sends_blank_names, answer: \"yes\", detail: \"confirmed by reading \u003crepo\u003e/\u003cpath\u003e at \u003cref\u003e: the generator always sends \u003chardcoded/generated value\u003e, never blank\"}"
+        }
+      }
+    }
+  ],
+  "proposals": [],
+  "verdict": "blocking",
+  "summary": "Verdict: blocking, on correctness. The change is well-tested and load/security/availability-neutral, but the one caller it could break — the dev traffic generator — has no discoverable source in the org, so the self-added discover.yaml claim that it 'never sends blank names' is an unverified assumption authored by this same PR. Separately (warning): the canary analysis ignores InvalidArgument so a total-rejection regression would auto-promote, and the e2e suite's own simulated caller sends an empty name yet both its reach and no-errors checks would still pass green, meaning no automated gate in this pipeline would catch this change being wrong about its one real caller."
+}
