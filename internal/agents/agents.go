@@ -129,6 +129,15 @@ repository.
 - The org finder: locating and mounting another repository — a callee,
   the platform's manifests, a chart — when the review needs to read it.
 
+## Search has a budget
+
+A fact that is not in the repository under review, the identifiers, the
+measured facts, or the first place the obligation names is not found by
+searching harder. One listing of the organisation's repositories and at
+most three mounts per unknown; then it is an unknown and you ask. The
+most expensive reviews are the ones that search for something that is
+not there.
+
 ## Unknowns and questions
 
 When a fact has no source — no identifiers, no manifest, no metric, no
@@ -380,8 +389,10 @@ Work like this:
    the paths, and the relevant contents or a precise summary with line
    references.
 
-If nothing matches, return exactly what you searched for and where, so
-the lead can ask a human. Do not guess a repository.`
+Your search has a budget: one repository listing, at most three mounts.
+If nothing matches within it, return exactly what you searched for and
+where, so the lead can ask a human. Do not guess a repository and do not
+keep looking.`
 
 // Instantiator does the first move only, on the strongest model: it reads
 // the change and writes the obligations — what must be established, where

@@ -10,6 +10,7 @@ the raw material for fixtures.
 | `2026-10-05-hello1-run3` | hello#1 | bootstrap, after the token diet | release | 593 s | 1.50M | 49k | 92 | warning; stopped by the $2 budget |
 | `2026-10-05-hello2-dev` | hello#2 (fixture P8, refactor) | identifiers with `measure:` present | dev (Sonnet lead) | 42 s | 68k | 4.2k | 8, no delegation | info |
 | `2026-10-05-hello3-p4` | hello#3 (fixture P4, reject blank names) | identifiers present | release (Opus lead) | 338 s | 657k | 26.7k | ~90, 3 threads | warning: canary analysis blind to InvalidArgument; e2e matcher accepts it; zero alert rules; one question (what does the live caller send?) |
+| `2026-10-05-hello3-staged` | hello#3 | identifiers present | staged: Opus instantiates ($0.27: 176k/7.1k), Sonnet executes (1.19M/23.5k) | 377 s | 1.37M | 30.6k | ~85 | blocking; same findings as above plus the dev overlay stripping the analysis; the executor spent most of its tokens searching 16 repositories for a workload manifest that exists in no repository, before asking |
 
 What the first run found on its own, with no identifiers and no product
 named anywhere in its prompts: the stack (Istio 1.31.1 sidecar with
