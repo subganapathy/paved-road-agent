@@ -111,6 +111,20 @@ func TestCommentBookkeeping(t *testing.T) {
 	}
 }
 
+func TestOrgWideWatch(t *testing.T) {
+	c, _ := newController(t, "")
+	c.cfg.Watch = nil
+	for repo, want := range map[string]bool{"acme/anything": true, "anything": true, "other/anything": false, "": false} {
+		if got := c.Watched(repo); got != want {
+			t.Errorf("Watched(%q) = %v, want %v", repo, got, want)
+		}
+	}
+	c.cfg.Watch = []string{"hello"}
+	if c.Watched("acme/other") || !c.Watched("acme/hello") {
+		t.Error("an explicit list narrows the watch")
+	}
+}
+
 func TestGateFromVerdict(t *testing.T) {
 	// The mapping from a report to a status is the gate; exercise it via
 	// the same switch the review uses, with a report in hand.

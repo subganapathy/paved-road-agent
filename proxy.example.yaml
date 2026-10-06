@@ -42,7 +42,7 @@ agent:
 # (--poll 60s, for a laptop with no inbound URL). The CLI `review` command
 # needs none of this.
 watch:
-  repos: [hello, frontend, ledger]
+  repos: []                                      # empty = every repository in the org; list names to narrow
   webhook_secret: keychain:paved-agent-webhook   # empty = unsigned; only acceptable with --poll and no public URL
   commit_files: true                             # the controller may commit .paved-agent/ on PR branches (answers, proposals)
   state_dir: /tmp/paved-road-agent/state

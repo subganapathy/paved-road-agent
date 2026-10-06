@@ -503,9 +503,6 @@ func runServe(ctx context.Context, args []string) error {
 	if cfg.Slots.SCM == nil {
 		return errors.New("slots.scm is required to serve")
 	}
-	if len(a.Watch.Repos) == 0 {
-		return errors.New("watch.repos is empty: nothing to review")
-	}
 	client, err := anthropicClient(a)
 	if err != nil {
 		return err
@@ -566,7 +563,11 @@ func runServe(ctx context.Context, args []string) error {
 	if *poll > 0 {
 		go ctl.Poll(ctx, *poll)
 	}
-	log.Info("serving", "addr", cfg.Listen, "watch", a.Watch.Repos, "poll", poll.String(), "webhook", "/github/webhook")
+	watch := "every repository in " + cfg.Slots.SCM.Org
+	if len(a.Watch.Repos) > 0 {
+		watch = strings.Join(a.Watch.Repos, ",")
+	}
+	log.Info("serving", "addr", cfg.Listen, "watch", watch, "poll", poll.String(), "webhook", "/github/webhook")
 	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

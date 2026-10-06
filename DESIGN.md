@@ -1094,6 +1094,39 @@ fact sheet without changing the contract.
 Model usage is the only material cost; the laptop and kind are free; GCP
 is cents outside the Autopilot hours.
 
+### 12.1 Measured
+
+Three live runs on the `sgrpc` fleet (`evals/runs/`):
+
+| Case | Lead | Time | Cached input | Output | Cost (est.) |
+|---|---|---|---|---|---|
+| bootstrap: no identifiers, full stack discovery | Opus | 974 s | 1.37M | 81k | ~$3 |
+| identifiers present, refactor (P8) | Sonnet | 42 s | 68k | 4.2k | ~$0.08 |
+| identifiers present, logic change (P4) | Opus | 338 s | 657k | 26.7k | ~$1 |
+
+Output tokens dominate the Opus runs (thinking counts as output). The
+`measure:` lines are what make the identifiers runs cheap: the controller
+executes the model's own queries before the session and hands the lead
+the numbers.
+
+### 12.2 At an organisation's scale: tiers, and a daily release-fitness run
+
+A thousand PRs a day at ~$1 each is $20–30k a month: too much, and the
+fix is not cheaper prompts but not running the expensive review on every
+PR. Four tiers, decided by how much the change could cost:
+
+| Tier | What runs | Est. cost | Share of PRs (a 1k/day org) |
+|---|---|---|---|
+| **skip** | deterministic: documentation, tests only, generated files, vendored dependencies | $0 | ~30% |
+| **triage** | the smaller model as lead: instantiation and the cheap path over pre-measured facts; it decides the worst case | ~$0.15 | ~60% |
+| **deep** | the strongest model as lead, with specialists — only when triage finds a meaningful worst case (production, external exposure, a contract or data change) or a warning | ~$1 | ~10% |
+| **release fitness** | one session per repository per day over the day's merged commits as one composite change, judging what ships; the only tier that sees two PRs safe alone and unsafe together | ~$1.5 per active repository | every active repo |
+
+Roughly $500 a day, $11–15k a month, against $66–90k for a deep review
+of everything. The per-PR gate applies to the deep tier only; triage and
+release fitness advise. The release-fitness run is also where the
+"other open changes" input to blast radius comes from (§7.4).
+
 | Operation | Tokens (est.) | Cost (est., at Opus $5/$25 and Sonnet $3/$15 per M in/out; verify against the price list) | Cap |
 |---|---|---|---|
 | Review with identifiers (A, B) | lead ~300k cached + 40k fresh in, 10k out; 2–3 specialists ~150k in, 6k out each | $1–2.5 | $3 |
@@ -1165,6 +1198,10 @@ damage of a runaway loop — per run, per CI run, per month.
 
 ## 14. Milestones
 
+(M2 is done except where noted: the first live runs are recorded in
+`evals/runs/`; the proposal→commit path and the kind deployment are
+pending.)
+
 - **M2 — identifiers, proxy, discovery by the model.** `discover.yaml`
   schema and lint; the proxy service with `metrics` and `scm` slots,
   policy and tarballs; connector tools as HTTP clients; the topology
@@ -1184,9 +1221,13 @@ damage of a runaway loop — per run, per CI run, per month.
   Kubernetes provider; `cloud_get` with the GCP adapter and WIF against a
   recorded plan. Exit: P3 blocks on replacement and quota with the plan
   as evidence.
-- **M5 — surfaces.** GitHub check with the states of 4.2, question threads
-  with prose answers turned into commits, opt-in bot commits. Then Slack
-  notifications linking back to the PR.
+- **M5 — surfaces.** GitHub commit status with the states of 4.2 (check
+  runs are App-only), question threads with prose answers turned into
+  commits, bot commits. The webhook watches every repository in the org
+  by default. Then Slack notifications linking back to the PR.
+- **M6 — tiers and release fitness.** The deterministic skip; triage on
+  the smaller model with escalation to the deep tier on a meaningful
+  worst case; the daily per-repository composite review (§12.2).
 
 ## 15. How the agent improves
 

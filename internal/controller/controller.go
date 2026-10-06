@@ -34,7 +34,7 @@ import (
 // Config is the controller's part of the deployment configuration.
 type Config struct {
 	Org           string
-	Watch         []string // repository names in the org whose PRs are reviewed
+	Watch         []string // repository names in the org whose PRs are reviewed; empty means every repository in the org
 	WebhookSecret string   // the value, already resolved; empty disables signature checks (poll mode)
 	StatusContext string   // default "impact"
 	CommitFiles   bool     // may the controller commit .paved-agent/ to PR branches (answers and proposals)
@@ -83,9 +83,20 @@ func New(cfg Config, client anthropic.Client, writes proxy.Writes, gh *github.Cl
 	return &Controller{cfg: cfg, client: client, writes: writes, gh: gh, log: log.With("component", "controller"), runs: map[string]context.CancelFunc{}}, nil
 }
 
-// Watched reports whether a repository is in the watch list.
+// Watched reports whether a repository's PRs are reviewed: any repository
+// in the org when the watch list is empty, otherwise the listed ones. A
+// repository outside the org is never watched; the proxy's scm slot
+// refuses it anyway.
 func (c *Controller) Watched(repo string) bool {
-	repo = strings.TrimPrefix(repo, c.cfg.Org+"/")
+	if i := strings.IndexByte(repo, '/'); i >= 0 {
+		if repo[:i] != c.cfg.Org {
+			return false
+		}
+		repo = repo[i+1:]
+	}
+	if len(c.cfg.Watch) == 0 {
+		return repo != ""
+	}
 	for _, w := range c.cfg.Watch {
 		if w == repo {
 			return true
@@ -460,7 +471,16 @@ func (c *Controller) Poll(ctx context.Context, every time.Duration) {
 }
 
 func (c *Controller) pollOnce(ctx context.Context) {
-	for _, repo := range c.cfg.Watch {
+	repos := c.cfg.Watch
+	if len(repos) == 0 {
+		names, err := c.gh.Repos(ctx, c.cfg.Org)
+		if err != nil {
+			c.log.Warn("poll: list repositories", "err", err)
+			return
+		}
+		repos = names
+	}
+	for _, repo := range repos {
 		prs, err := c.gh.OpenPRs(ctx, c.cfg.Org, repo)
 		if err != nil {
 			c.log.Warn("poll", "repo", repo, "err", err)

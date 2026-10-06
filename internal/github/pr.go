@@ -223,3 +223,26 @@ func (c *Client) OpenPRs(ctx context.Context, owner, repo string) ([]OpenPR, err
 	}
 	return out, nil
 }
+
+// Repos lists the org's non-archived repository names, for an org-wide watch.
+func (c *Client) Repos(ctx context.Context, owner string) ([]string, error) {
+	var out []string
+	for page := 1; page <= 10; page++ {
+		var raw []struct {
+			Name     string `json:"name"`
+			Archived bool   `json:"archived"`
+		}
+		if err := c.get(ctx, fmt.Sprintf("/orgs/%s/repos?per_page=100&page=%d&sort=pushed", url.PathEscape(owner), page), &raw); err != nil {
+			return nil, err
+		}
+		for _, r := range raw {
+			if !r.Archived {
+				out = append(out, r.Name)
+			}
+		}
+		if len(raw) < 100 {
+			break
+		}
+	}
+	return out, nil
+}
