@@ -1,0 +1,79 @@
+verdict: BLOCKING
+Blocking on within_budget: the PR raises the client's intended rate to 50rps, but the platform appliance it crosses into (pra-infra's envoy grpc_ingress listener) hard-caps ingress at 20rps via a local rate limiter, returning 429 beyond that — the change targets 2.5x the dependency's own ceiling. A live server-side reading of 29.26rps already sits at/above that cap, unreconciled due to exhausted metrics query budget. Secondary warnings: achieved client rate and config-restart semantics are unverified (correct); retry amplification on connection-level failures under higher connection churn (stable_under_failure); no staged rollout and an unidentified second appliance consumer 'async-client' (progressively_delivered); the client emits no signal and the fleet has zero alert rules anywhere (observable); no tests exist (proven).
+
+worst case: The client Deployment (namespace client, 1 ready replica in cluster e5-client, dev) multiplies its offered load tenfold — from one grpcurl call every 0.2s to one every 0.02s — onto a path it does not own: the platform entrance api.e5.internal:8443 (an envoy-based appliance per .paved-agent/discover.yaml metrics stack, owned by pra-infra) and, behind it, the hello.v1.HelloService server in cluster e5-server. Because the client spawns a fresh grpcurl process per iteration with -plaintext, each call is a new TCP + HTTP/2 connection, so the appliance sees up to 10x the connection churn, not merely 10x the requests on an established connection. If the server or the appliance cannot carry it, the failure is not confined to this client: every other workload routed through api.e5.internal degrades, in the e5-server cluster. Both clusters are dev (fleet: e5-client, e5-server both env=dev), which caps user impact, but the change's entire purpose is to raise load on a shared dependency whose capacity is nowhere stated in this repository (README.md defers it: 'how that name reaches the server is the platform's business'). A second, quieter worst case: CALL_INTERVAL is consumed via envFrom configMapRef, so applying the ConfigMap alone changes nothing in the running pod — the 10x step then lands silently at some arbitrary later pod restart (node drain, image bump), with nobody watching, since the client discards all output to /dev/null. (full proof)
+
+stack:
+  mesh:       none: plaintext grpcurl, no sidecar
+  deploy:     plain Deployment, no GitOps, applied by pipeline
+  admission:  Pod Security Admission enforce=restricted on both client and hello namespaces
+  autoscaler: none, on client or server
+  path:       client (e5-client, 1 replica) -> stock Envoy appliance 'e5-appliance' on the shared inter-cluster network (not a k8s object in either cluster) -> NodePort Service hello:30051 in e5-server (2 replicas)
+
+properties:
+  correct                  warning  Plaintext/h2c is accepted end to end, but the fork-per-call shell loop's achieved rate and whether the ConfigMap edit even reaches the running pod are both unestablished.
+  reversible               info     Single ConfigMap scalar, no schema/stored state touched; only caveat is envFrom requires a pod restart to take effect, which also governs rollback speed.
+  within_budget            blocking The platform appliance hard-caps ingress at 20 rps (envoy local_ratelimit); the PR's intended 50 rps is 2.5x over that ceiling, and a current server-side reading of 29.26 rps already sits at or above it, unreconciled.
+  stable_under_failure     warning  429s from the rate limiter are not retried, but the appliance's 3x retry_policy on connection-level failures plus a 64-connection circuit breaker means the fork-per-call client's connection churn at 50rps could still amplify failures into hello_server_cluster.
+  progressively_delivered  warning  No staged rollout exists (one ConfigMap value, one cluster, no canary/GitOps); worst case is meaningful because the path is shared with an unidentified second appliance consumer ('async-client').
+  available                warning  Pod shape, limits and PSA are unchanged and currently healthy (0 restarts), but client-side CPU usage against its 200m limit under the new fork rate was not measurable and could throttle or restart the pod.
+  secure                   info     No sensitive data, no new permission or identity; plaintext cross-cluster traffic is pre-existing at 5rps and merely increases in volume, not in kind.
+  observable               warning  The client emits zero signal (output discarded, no probes, no metrics endpoint) and the fleet's alert rules API returns zero rule groups everywhere; server- and appliance-side counters exist but nothing pages on them.
+  proven                   warning  The repository has no tests and no CI; the only proof available is observing the live dev clusters after merge, which is not yet a demonstrated plan.
+
+[blocking] within_budget (confidence 0.90)
+  The grpc_ingress listener's local_ratelimit caps the path at 20 rps (token_bucket max_tokens=20, fill_interval=1s), 2.5x below the PR's intended 50 rps.
+  evidence (config): pra-infra/e5/envoy.yaml envoy.filters.http.local_ratelimit on listener grpc_ingress:8443 = max_tokens=20, tokens_per_fill=20, fill_interval=1s, 429 on overflow
+  recommend: Confirm with the appliance owner (pra-infra) whether the 20rps cap is meant to be raised alongside this change; otherwise the extra 30rps simply produces 429s and the server never sees the intended load.
+
+[warning] within_budget (confidence 0.50)
+  A server-side reading of 29.26 rps (sum(rate(vikrant_rpcs_handled_total{namespace="hello"}[5m]))) already exceeds both the stated 5rps baseline and the appliance's declared 20rps cap, and could not be reconciled against the appliance's own counters before the metrics query budget was exhausted.
+  evidence (metric): topology discoverer sum(rate(vikrant_rpcs_handled_total{namespace="hello"}[5m])) = 29.26 rps
+  recommend: Re-run envoy_http_downstream_rq_total and envoy_http_local_rate_limit_rate_limited for conn_manager_prefix=grpc_ingress with a fresh query budget before approving, to establish actual headroom.
+
+[warning] correct (confidence 0.50)
+  The client's loop forks a new grpcurl process (re-parsing hello.proto, new TCP connection) per call under a 200m CPU limit, so the achieved rate at CALL_INTERVAL=0.02s may be materially below the claimed 50 rps; client-side CPU usage could not be measured (empty process_cpu_seconds_total{namespace="client"}).
+  evidence (diff): deploy/client.yaml container args block = while true; do grpcurl ...; sleep "$CALL_INTERVAL"; done
+  evidence (metric): topology discoverer process_cpu_seconds_total{namespace="client"} = no data
+  recommend: Measure the actual achieved call rate (server-side vikrant_rpcs_handled_total before/after rollout) rather than trusting the description.
+
+[warning] correct (confidence 0.70)
+  CALL_INTERVAL is consumed via envFrom: configMapRef, read once at container start; no pod-template checksum or restart trigger exists in this repo, so applying the ConfigMap alone does not change the running pod's behaviour until an unrelated restart occurs.
+  evidence (config): deploy/client.yaml ConfigMap + Deployment pod template = no annotations, no restart hook; discover.yaml stack.deploy = plain Deployment, no GitOps
+  recommend: Confirm the pipeline that applies deploy/client.yaml also rolls the Deployment (e.g. kubectl rollout restart) on config change; otherwise the 10x step lands silently at an arbitrary future restart.
+
+[warning] stable_under_failure (confidence 0.70)
+  The appliance's to_hello route retries 3x on unavailable/connect-failure/refused-stream (not on 429), and hello_server_cluster's circuit breaker caps at max_connections=64/max_pending_requests=100; fork-per-call connection churn at 50rps pushes closer to that connection ceiling, where retry amplification (up to 4x) would apply.
+  evidence (config): pra-infra/e5/envoy.yaml route to_hello retry_policy; hello_server_cluster circuit_breakers = num_retries=3, retry_on=unavailable,connect-failure,refused-stream; max_connections=64, max_pending_requests=100
+  recommend: Note that simple rate-limit 429s are not retried (no cascade from that path); risk is specifically connection-level failures under the new per-call connection-churn volume.
+
+[warning] observable (confidence 0.80)
+  The client discards all grpcurl output (>/dev/null 2>&1), exposes no metrics endpoint and has no probes; the fleet's alerting rules API returns zero rule groups fleet-wide, so no alert anywhere would catch this change being wrong.
+  evidence (diff): deploy/client.yaml container args = >/dev/null 2>&1, no probes
+  evidence (metric): metrics_rules via topology metrics_rules() = {"groups": []}
+  recommend: At minimum, check the server- and appliance-side counters (vikrant_rpcs_handled_total, envoy_http_local_rate_limit_rate_limited) manually around the rollout since no alert will do it automatically.
+
+[warning] progressively_delivered (confidence 0.40)
+  There is no staged rollout mechanism (plain Deployment, no GitOps/canary) and the appliance exposes a second, unidentified listener prefix 'async-client' not present in the inspected pra-infra/e5/envoy.yaml, meaning the blast radius of exhausting the shared 20rps budget may extend to an unknown co-tenant.
+  evidence (metric): topology discoverer envoy_http_conn_manager_prefix label values = admin, grpc_ingress, async-client (async-client absent from the mounted envoy.yaml)
+  recommend: Identify what 'async-client' is and whether it shares grpc_ingress's token bucket before raising load on the same appliance.
+
+[warning] proven (confidence 0.90)
+  The mounted repository contains only README.md, deploy/client.yaml and discover.yaml — no tests, no CI — so nothing pre-merge validates the achieved rate or server/appliance behaviour under it.
+  evidence (doc): repo tree at ece221ca find . -type f = README.md, deploy/client.yaml, .paved-agent/discover.yaml only
+  recommend: Treat the dev-cluster rollout itself as the only available proof, and watch the specific counters named above during it.
+
+unknown: Whether the pipeline that applies deploy/client.yaml restarts the client Deployment on ConfigMap change (blocks correct); tried: read deploy/client.yaml for checksum annotations or restart hooks (none found); searched the mounted repo for any pipeline/CI file (none present)
+
+unknown: Appliance's own current counters (envoy_http_downstream_rq_total, envoy_http_local_rate_limit_rate_limited for grpc_ingress) to reconcile with the measured 29.26rps server-side figure (blocks within_budget, stable_under_failure); tried: topology discoverer queried these but hit the metrics backend's 60-call session budget (HTTP 429) before completing
+
+unknown: Identity and traffic of the appliance's 'async-client' listener prefix, absent from the mounted pra-infra/e5/envoy.yaml (blocks within_budget, progressively_delivered); tried: read the full envoy.yaml file (only grpc_ingress and admin listeners present); queried envoy_http_conn_manager_prefix label values
+
+QUESTION q1 (blocks correct):
+  Does the pipeline that applies deploy/client.yaml perform a rollout restart (e.g. kubectl rollout restart) of the client Deployment whenever client-config changes, so the new CALL_INTERVAL takes effect on merge rather than at some later unrelated restart?
+  if yes → write to .paved-agent/discover.yaml:
+    answers:
+      - {question: q1, answer: "yes", detail: "pipeline runs kubectl rollout restart on ConfigMap apply for namespace client"}
+  if no → write to .paved-agent/discover.yaml:
+    answers:
+      - {question: q1, answer: "no", detail: "ConfigMap changes take effect only at the next unrelated pod restart (node drain, image bump); envFrom is read once at container start"}

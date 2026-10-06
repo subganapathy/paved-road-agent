@@ -61,6 +61,8 @@ func main() {
 		err = runCost(ctx, os.Args[2:])
 	case "sessions":
 		err = runSessions(ctx, os.Args[2:])
+	case "report":
+		err = runReport(ctx, os.Args[2:])
 	default:
 		usage()
 	}
@@ -71,7 +73,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: change-agent setup|proxy|worker|review|serve|trace|cost|sessions [flags]")
+	fmt.Fprintln(os.Stderr, "usage: change-agent setup|proxy|worker|review|serve|trace|cost|sessions|report [flags]")
 	os.Exit(2)
 }
 
@@ -705,6 +707,53 @@ func kTokens(n int64) string {
 		return fmt.Sprintf("%.0fk", float64(n)/1e3)
 	}
 	return fmt.Sprint(n)
+}
+
+// runReport re-collects a finished session's report without spending
+// anything: the lead's last message that parses, with the instantiation
+// from a staged review's first session attached.
+func runReport(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("report", flag.ExitOnError)
+	cfgPath := fs.String("config", "proxy.yaml", "configuration file")
+	id := fs.String("session", "", "the executing session")
+	instID := fs.String("instantiation", "", "the instantiating session of a staged review, to attach its obligations")
+	out := fs.String("out", "", "also write the report JSON here")
+	fs.Parse(args)
+	if *id == "" {
+		return errors.New("--session is required")
+	}
+	a, err := loadAgentConfig(*cfgPath)
+	if err != nil {
+		return err
+	}
+	client, err := anthropicClient(a)
+	if err != nil {
+		return err
+	}
+	rep, _, err := session.LastLeadReport(ctx, client, *id)
+	if err != nil {
+		return err
+	}
+	rep.Normalize()
+	if *instID != "" {
+		text, err := session.LastLeadMessage(ctx, client, *instID)
+		if err != nil {
+			return err
+		}
+		in, err := findings.ParseInstantiation(text)
+		if err != nil {
+			return fmt.Errorf("instantiation session: %w", err)
+		}
+		rep.Adopt(*in)
+	}
+	if *out != "" {
+		b, _ := json.MarshalIndent(rep, "", "  ")
+		if err := os.WriteFile(*out, b, 0o644); err != nil {
+			return err
+		}
+	}
+	fmt.Print(rep.Render())
+	return nil
 }
 
 // ---- serve ----------------------------------------------------------------

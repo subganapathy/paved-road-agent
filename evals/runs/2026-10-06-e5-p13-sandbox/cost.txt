@@ -1,0 +1,74 @@
+session sesn_01Frfj4CzGSg2Qe6JMZe2cQt
+list cost $0.33  active 123s  turns 3
+tokens: new input 15.1k  cache read 29.2k  output 8.7k  (cache hit 66%)
+
+== lead  turns 3  new 15.1k  cache read 29.2k  output 8.7k  hit 66%  idle end_turn×1 requires_action×3
+   turns caused by                              turns    new in cache read   output
+   continuation                                     1       266      14.8k     8.4k
+   after bash                                       1       390      14.4k       94
+   after scm_mount, fleet                           1     14.4k          0      218
+   tool results                                 calls     bytes
+   bash                                             1       398
+   fleet                                            1       103
+   scm_mount                                        1        89
+
+session sesn_019Fd1DHuXVcWKJMrcmap3Rc
+list cost $0.89  active 433s  turns 37
+tokens: new input 112.2k  cache read 854.4k  output 42.4k  (cache hit 88%)
+
+== lead  turns 11  new 52.2k  cache read 308.7k  output 23.3k  hit 86%  idle end_turn×3 requires_action×52
+   turns caused by                              turns    new in cache read   output
+   continuation                                     5      3.9k     137.3k     1.9k
+   nudge                                            2     15.7k      83.2k    10.8k
+   reply from Topology discoverer                   1      5.4k      31.0k    10.2k
+   after bash                                       1       753      29.4k       85
+   reply from Org finder                            1      1.6k      27.8k       87
+   after fleet, metrics_rules                       1     24.8k          0      161
+   tool results                                 calls     bytes
+   metrics_rules                                    1       179
+   fleet                                            1       103
+   bash                                             1        11
+
+== Topology discoverer  turns 20  new 48.6k  cache read 511.5k  output 16.9k  hit 91%  idle end_turn×1 requires_action×73
+   turns caused by                              turns    new in cache read   output
+   after bash                                       3      3.2k     104.8k     2.9k
+   continuation                                     2      9.9k      80.6k     6.8k
+   after metrics_query                              2      2.8k      66.7k      446
+   after read×4                                     1       799      37.9k      391
+   after metrics_query×15                           1       899      31.0k     1.3k
+   after metrics_query×4                            1       738      30.2k      388
+   after metrics_query×5                            1      1.1k      29.1k      404
+   after metrics_query×9                            1      7.4k      21.8k      718
+   after metrics_series×3                           1      1.0k      20.8k      338
+   after metrics_query×3, metrics_series            1      1.7k      19.1k      303
+   after metrics_label_values×4                     1      1.4k      17.7k      458
+   after cloud_get, metrics_label_values×2, m…      1       806      16.9k      987
+   after metrics_series, metrics_label_values�…     1       829      16.0k      501
+   after metrics_series, metrics_label_values       1      6.1k      10.0k      307
+   after metrics_label_values×5                     1       918       9.1k      491
+   after fleet, dns_resolve, metrics_label_val…     1      9.1k          0      166
+   tool results                                 calls     bytes
+   metrics_series                                   6     16.2k
+   metrics_label_values                            15     15.9k
+   read                                             4      7.1k
+   metrics_query                                   42      3.5k
+   bash                                             3       869
+   fleet                                            1       103
+   cloud_get                                        1        79
+   metrics_rules                                    1        71
+   dns_resolve                                      1        68
+
+== Org finder  turns 6  new 11.4k  cache read 34.2k  output 2.2k  hit 75%  idle end_turn×1 requires_action×8
+   turns caused by                              turns    new in cache read   output
+   continuation                                     2      4.7k      16.5k     1.6k
+   after read×3                                     1       480       6.3k      268
+   after bash                                       1       123       6.2k       88
+   after scm_mount                                  1       850       5.3k       68
+   after scm_search_code×2, scm_repos               1      5.3k          0      151
+   tool results                                 calls     bytes
+   read                                             3      6.8k
+   scm_repos                                        1      1.3k
+   bash                                             1       512
+   scm_mount                                        1        70
+   scm_search_code                                  2        44
+

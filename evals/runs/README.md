@@ -19,6 +19,7 @@ $0.12. Ledger as of 2026-10-06: 12 sessions, $10.46.
 | `2026-10-05-hello2-dev` | hello#2 (fixture P8, refactor) | identifiers with `measure:` present | dev (Sonnet lead) — **$0.12** | 42 s | 68k | 4.2k | 8, no delegation | info |
 | `2026-10-05-hello3-p4` | hello#3 (fixture P4, reject blank names) | identifiers present | release (Opus lead) — **$1.16** | 338 s | 657k | 26.7k | ~90, 3 threads | warning: canary analysis blind to InvalidArgument; e2e matcher accepts it; zero alert rules; one question (what does the live caller send?) |
 | `2026-10-06-e5-p13` | pra-client#1 (fixture P13: call rate 5 → 50 rps, client and server in different clusters, a stock-Envoy appliance between them) | identifiers present, no `path` line | staged: Opus instantiates ($0.41), Sonnet executes ($1.24) — **$1.65** | 706 s | 1.75M | 65k | ~200 | **warning**: found the appliance from `pra-infra/e5/envoy.yaml` and its stats — 20 rps token bucket, ×3 retries not on 429, breakers untripped; server 2/2 with headroom; recorded `path:`; also found that the claimed 50 rps is unreachable (grpcurl overhead, measured) and that an `envFrom` ConfigMap change needs a pod restart; one question. The executor ran `docker run` on the laptop to measure — bash is now off outside the pod. |
+| `2026-10-06-e5-p13-sandbox` | pra-client#1 again, **served by the sandbox pod** (bash in the shell container; no credential in the pod), after the cost fixes | identifiers present, no `path` line | staged: Opus instantiates ($0.33, 3 turns), Sonnet executes ($0.89) — **$1.22** vs $1.65 | 555 s | 127k | 51k | ~115 | **blocking** this time: same appliance, same 20 rps bucket, but argued that a shared token bucket drained by one client starves every consumer of the route; one false positive feeds that (Envoy's internal `async-client` stats read as a second consumer); a live 29 rps reading left "unreconciled" because the specialist hit the 60-call cap. Lead: 11 turns, none spent waiting (was 35, 20 waiting). The report was still written three times — this time because the strict parser rejected `instances` as a per-cluster map and the collector nudged; fixed (lenient parse, nudge only for a missing report). Without those two nudges ≈ $1.05. |
 | `2026-10-05-hello3-staged` | hello#3 | identifiers present | staged: Opus instantiates ($0.48), Sonnet executes ($0.72) — **$1.20** | 377 s | 1.37M | 30.6k | ~85 | blocking; same findings as above plus the dev overlay stripping the analysis; the executor spent most of its tokens searching 16 repositories for a workload manifest that exists in no repository, before asking |
 
 What the first run found on its own, with no identifiers and no product
@@ -52,5 +53,15 @@ message that parses is the report, prose after it does not trigger a
 nudge; the executor writes `instantiation: {adopted: true}` instead of
 copying the senior reviewer's text back; the diff and the changed files
 are in the brief so the instantiator can write after zero or one tool
-call; long label listings come back grouped by family. The next measured
-run says what those are worth.
+call; long label listings come back grouped by family.
+
+What the rerun (`2026-10-06-e5-p13-sandbox`) says they were worth: the
+instantiator went from 4–8 turns to 3 and $0.41 → $0.33; the lead from
+35 turns to 11 with zero spent waiting; the executor $1.24 → $0.89; the
+whole review $1.65 → $1.22, and ≈ $1.05 once the parser stops asking for
+the report again. What got worse: the topology specialist ran 20 turns
+(was 11) and hit the per-session call cap — the grouped `__name__`
+listing makes it drill into families one `contains` at a time, and it
+re-measured what the brief's `measure:` block did not cover. Next lever
+is there: a `measure:` block for the appliance's counters, so the
+numbers arrive with the brief.

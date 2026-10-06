@@ -1,0 +1,72 @@
+session sesn_01W3CxGsEhzZAS7q43gSV8sS
+list cost $0.41  active 160s  turns 4
+tokens: new input 18.0k  cache read 45.5k  output 10.7k  (cache hit 72%)
+
+== lead  turns 4  new 18.0k  cache read 45.5k  output 10.7k  hit 72%  idle end_turn×1 requires_action×4
+   turns caused by                              turns    new in cache read   output
+   continuation                                     1      1.8k      16.2k     8.7k
+   after fleet                                      1       291      15.9k     1.7k
+   after bash                                       1      2.5k      13.4k      136
+   after scm_pr, scm_mount                          1     13.4k          0      180
+   tool results                                 calls     bytes
+   scm_pr                                           1      4.8k
+   bash                                             1       366
+   scm_mount                                        1       113
+   fleet                                            1       103
+
+session sesn_013sdXAzsvJnngrkdMgprrGT
+list cost $1.24  active 504s  turns 55
+tokens: new input 136.6k  cache read 1.70M  output 54.2k  (cache hit 93%)
+
+== lead  turns 35  new 71.8k  cache read 1.31M  output 35.1k  hit 95%  idle end_turn×2 requires_action×15
+   turns caused by                              turns    new in cache read   output
+   after bash                                      16     12.1k     625.0k    10.7k
+   continuation                                    12     11.7k     419.1k     7.8k
+   nudge                                            2      7.2k     129.2k    13.9k
+   reply from Topology discoverer                   1     11.1k      53.5k      126
+   reply from Org finder                            1      2.1k      34.4k      745
+   after org-finder                                 1       302      27.3k     1.4k
+   after read                                       1      2.8k      24.6k      154
+   after scm_mount, scm_pr, fleet, metrics_rul…     1     24.6k          0      289
+   tool results                                 calls     bytes
+   scm_pr                                           1      4.8k
+   bash                                            16       417
+   read                                             1       353
+   scm_mount                                        1       113
+   fleet                                            1       103
+   metrics_rules                                    1        71
+
+== Topology discoverer  turns 11  new 49.5k  cache read 322.5k  output 14.7k  hit 87%  idle end_turn×2 requires_action×58
+   turns caused by                              turns    new in cache read   output
+   continuation                                     3      9.4k     127.9k     5.3k
+   reply from Impact lead (dev tier)                1       688      46.3k     2.5k
+   after metrics_query×12, metrics_rules            1      3.4k      36.1k     1.0k
+   after metrics_query×18                           1      3.7k      32.4k     1.7k
+   after metrics_query×14                           1      6.5k      25.9k     2.1k
+   after bash                                       1      1.1k      24.9k      527
+   after read×6                                     1      5.2k      19.7k      719
+   after bash, metrics_label_values×3               1     10.4k       9.3k      652
+   after fleet, bash, metrics_label_values          1      9.3k          0      247
+   tool results                                 calls     bytes
+   bash                                             3     24.8k
+   metrics_label_values                             4     20.5k
+   metrics_query                                   44      6.1k
+   read                                             6       519
+   fleet                                            1       103
+   metrics_rules                                    1        71
+
+== Org finder  turns 9  new 15.4k  cache read 69.1k  output 4.3k  hit 82%  idle end_turn×1 requires_action×13
+   turns caused by                              turns    new in cache read   output
+   continuation                                     2      4.6k      23.6k     3.0k
+   after bash                                       2       352      16.4k      199
+   after scm_mount                                  2      4.3k      12.2k      210
+   after read×3                                     1       278      10.5k      384
+   after read×4                                     1       588       6.3k      441
+   after scm_search_code×2, scm_repos               1      5.3k          0      147
+   tool results                                 calls     bytes
+   read                                             7     11.3k
+   scm_repos                                        1      1.3k
+   bash                                             2       974
+   scm_mount                                        2       207
+   scm_search_code                                  2        44
+
