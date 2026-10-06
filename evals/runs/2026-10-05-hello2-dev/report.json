@@ -1,0 +1,181 @@
+{
+  "change": "smallStepGiantLeap/hello#2@34b45b0117b957ae88213613cbd8115fe133ed99",
+  "instantiation": {
+    "worst_case": "The new `greeting()` helper computes the response string incorrectly, so `Hello` returns a wrong message to internal callers of the gRPC service; no data, auth, scaling, or deployment surface is touched.",
+    "proportionality": "reduced",
+    "obligations": [
+      {
+        "property": "correct",
+        "establish": "the extracted function returns byte-for-byte the same string as the inline code it replaces",
+        "evidence": "diff + existing unit test"
+      },
+      {
+        "property": "reversible",
+        "establish": "no stored format, contract, or config changed",
+        "evidence": "diff scope"
+      },
+      {
+        "property": "within_budget",
+        "establish": "no new call or dependency added",
+        "evidence": "diff scope"
+      },
+      {
+        "property": "stable_under_failure",
+        "establish": "no new call site, timeout, or retry path added",
+        "evidence": "diff scope"
+      },
+      {
+        "property": "progressively_delivered",
+        "establish": "worst case is low; rollout still goes through whatever mechanism the environment already uses",
+        "evidence": "discover.yaml stack.deploy; measured owner_kind=Rollout"
+      },
+      {
+        "property": "available",
+        "establish": "no manifest or workload-shape change",
+        "evidence": "diff scope (handlers file only)"
+      },
+      {
+        "property": "secure",
+        "establish": "no sensitive data or permission touched",
+        "evidence": "diff scope; function takes a plain name string"
+      },
+      {
+        "property": "observable",
+        "establish": "existing signals (vikrant_rpcs_handled_total, istio_requests_total) still cover the unchanged RPC path",
+        "evidence": "discover.yaml measure.errors/rps definitions"
+      },
+      {
+        "property": "proven",
+        "establish": "the existing test exercises both inputs through the new call path and expects identical output",
+        "evidence": "internal/handlers/hello_service_test.go"
+      }
+    ]
+  },
+  "discovery": {
+    "stack": {
+      "admission": {
+        "is": "pod security admission restricted, no general policy engine",
+        "evidence": "discover.yaml; not re-verified, not implicated"
+      },
+      "autoscaler": {
+        "is": "KEDA-generated HPA keda-hpa-hello, floor 1 / ceiling 2",
+        "evidence": "measured floor=1, ceiling=2"
+      },
+      "deploy": {
+        "is": "GitOps (argo cd) + progressive rollout (argo rollouts)",
+        "evidence": "measured owner: kube_replicaset_owner shows owner_kind=Rollout, owner_name=hello"
+      },
+      "enforcer": {
+        "is": "kubernetes NetworkPolicy default-deny",
+        "evidence": "discover.yaml; not re-verified, not implicated"
+      },
+      "mesh": {
+        "is": "istio sidecar mesh, strict mTLS",
+        "evidence": "discover.yaml; not re-verified this run, not implicated by this change"
+      },
+      "metrics": {
+        "is": "prometheus backend with vikrant_* and istio families, no alerting rules present",
+        "evidence": "measured alerts query returned no data"
+      }
+    },
+    "verified": [
+      "deploy: kube_replicaset_owner reports owner_kind=\"Rollout\"",
+      "autoscaler: kube_horizontalpodautoscaler_spec_max_replicas/min_replicas series exist for keda-hpa-hello"
+    ],
+    "broken": [],
+    "by_env": {
+      "dev": {
+        "clusters": [
+          "e1-dev"
+        ],
+        "instances": 1,
+        "rps": 3.31,
+        "callers": [
+          "frontend/traffic via spiffe://cluster.local/ns/frontend/sa/frontend"
+        ],
+        "external": false
+      }
+    }
+  },
+  "properties": {
+    "available": {
+      "verdict": "info",
+      "summary": "No manifest or workload-shape change; PDB (expected_pods=1), limits, and restarts (0) are all unaffected by this diff."
+    },
+    "correct": {
+      "verdict": "info",
+      "summary": "greeting(name) is a pure string-concatenation extraction identical to the code it replaces; no contract, dependency, or config is introduced."
+    },
+    "observable": {
+      "verdict": "info",
+      "summary": "The RPC path is unchanged and remains covered by existing vikrant_rpcs_handled_total and istio_requests_total signals; no new failure mode was introduced that needs new instrumentation."
+    },
+    "progressively_delivered": {
+      "verdict": "info",
+      "summary": "Worst case is a single wrong string on an internal path, caught by the unchanged unit test; rollout still occurs via the existing Argo Rollouts object (owner_kind=Rollout), so staged delivery is not bypassed."
+    },
+    "proven": {
+      "verdict": "info",
+      "summary": "TestHello exercises both the named and empty-name cases through Hello()-\u003egreeting() and asserts the exact same output string, confirming behaviour preservation."
+    },
+    "reversible": {
+      "verdict": "info",
+      "summary": "Change touches only an internal function body; no persisted data, wire contract, or config schema is affected, so old/new pods are fully interchangeable."
+    },
+    "secure": {
+      "verdict": "info",
+      "summary": "No sensitive data, identity, or permission is introduced or moved; the function only concatenates a name string already present in the request."
+    },
+    "stable_under_failure": {
+      "verdict": "info",
+      "summary": "No new call site, timeout, or retry path is introduced; the existing idempotent-unary contract and mesh retry behaviour are untouched."
+    },
+    "within_budget": {
+      "verdict": "info",
+      "summary": "No new call or fan-out is added; current load (rps≈3.3, 1 ready instance against ceiling 2) is unaffected by this change."
+    }
+  },
+  "findings": [
+    {
+      "property": "correct",
+      "severity": "info",
+      "claim": "greeting(name) returns \"hello \"+name, byte-identical to the inline expression it replaces.",
+      "evidence": [
+        {
+          "kind": "diff",
+          "source": "scm_pr",
+          "query": "internal/handlers/hello_service.go",
+          "value": "Message: \"hello \" + req.GetName() -\u003e Message: greeting(req.GetName()); func greeting(name string) string { return \"hello \" + name }"
+        }
+      ],
+      "recommendation": "none",
+      "confidence": 0.98,
+      "studied": [
+        "internal/handlers/hello_service.go"
+      ]
+    },
+    {
+      "property": "proven",
+      "severity": "info",
+      "claim": "The existing TestHello covers both a non-empty and empty name through the new call path and still expects \"hello Subramanian\"/\"hello \".",
+      "evidence": [
+        {
+          "kind": "diff",
+          "source": "repo",
+          "query": "internal/handlers/hello_service_test.go",
+          "value": "unchanged test table, same expected strings"
+        }
+      ],
+      "recommendation": "none",
+      "confidence": 0.95,
+      "studied": [
+        "internal/handlers/hello_service_test.go"
+      ]
+    }
+  ],
+  "unknowns": [],
+  "questions": [],
+  "proposals": [],
+  "verdict": "info",
+  "summary": "Pure internal refactor: Hello() now delegates to greeting(name), which returns the same string. No contract, data, load, failure path, deployment shape, security surface, observability, or test coverage is affected. Existing unit test still covers the exact same behaviour through the new call path. All nine properties verify as info; no blocking or warning findings."
+}

@@ -1,0 +1,33 @@
+verdict: INFO
+Pure internal refactor: Hello() now delegates to greeting(name), which returns the same string. No contract, data, load, failure path, deployment shape, security surface, observability, or test coverage is affected. Existing unit test still covers the exact same behaviour through the new call path. All nine properties verify as info; no blocking or warning findings.
+
+worst case: The new `greeting()` helper computes the response string incorrectly, so `Hello` returns a wrong message to internal callers of the gRPC service; no data, auth, scaling, or deployment surface is touched. (reduced proof)
+
+stack:
+  mesh:       istio sidecar mesh, strict mTLS
+  deploy:     GitOps (argo cd) + progressive rollout (argo rollouts)
+  admission:  pod security admission restricted, no general policy engine
+  enforcer:   kubernetes NetworkPolicy default-deny
+  autoscaler: KEDA-generated HPA keda-hpa-hello, floor 1 / ceiling 2
+  metrics:    prometheus backend with vikrant_* and istio families, no alerting rules present
+
+properties:
+  correct                  info     greeting(name) is a pure string-concatenation extraction identical to the code it replaces; no contract, dependency, or config is introduced.
+  reversible               info     Change touches only an internal function body; no persisted data, wire contract, or config schema is affected, so old/new pods are fully interchangeable.
+  within_budget            info     No new call or fan-out is added; current load (rps≈3.3, 1 ready instance against ceiling 2) is unaffected by this change.
+  stable_under_failure     info     No new call site, timeout, or retry path is introduced; the existing idempotent-unary contract and mesh retry behaviour are untouched.
+  progressively_delivered  info     Worst case is a single wrong string on an internal path, caught by the unchanged unit test; rollout still occurs via the existing Argo Rollouts object (owner_kind=Rollout), so staged delivery is not bypassed.
+  available                info     No manifest or workload-shape change; PDB (expected_pods=1), limits, and restarts (0) are all unaffected by this diff.
+  secure                   info     No sensitive data, identity, or permission is introduced or moved; the function only concatenates a name string already present in the request.
+  observable               info     The RPC path is unchanged and remains covered by existing vikrant_rpcs_handled_total and istio_requests_total signals; no new failure mode was introduced that needs new instrumentation.
+  proven                   info     TestHello exercises both the named and empty-name cases through Hello()->greeting() and asserts the exact same output string, confirming behaviour preservation.
+
+[info] correct (confidence 0.98)
+  greeting(name) returns "hello "+name, byte-identical to the inline expression it replaces.
+  evidence (diff): scm_pr internal/handlers/hello_service.go = Message: "hello " + req.GetName() -> Message: greeting(req.GetName()); func greeting(name string) string { return "hello " + name }
+  recommend: none
+
+[info] proven (confidence 0.95)
+  The existing TestHello covers both a non-empty and empty name through the new call path and still expects "hello Subramanian"/"hello ".
+  evidence (diff): repo internal/handlers/hello_service_test.go = unchanged test table, same expected strings
+  recommend: none
