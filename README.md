@@ -142,7 +142,9 @@ and that shell's world is `/work`.
 You need Go 1.26, a Managed Agents workspace, a Kubernetes cluster you
 can read metrics from (kind is fine), and `kubectl`, `kind`, `docker`.
 Credentials are never values in files — only *sources*: `env:NAME`,
-`keychain:SERVICE` (macOS), or `none`.
+`keychain:SERVICE` (macOS), or `none`. Developed on a Mac with Docker
+Desktop; on Linux use `env:` sources and, for the pod, export
+`PRA_PROXY_TOKEN` and have the proxy listen on the Docker bridge.
 
 ```sh
 go build -o change-agent ./cmd/change-agent
