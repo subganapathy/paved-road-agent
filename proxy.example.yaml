@@ -16,6 +16,11 @@ slots:
     kind: promql
     endpoint: http://127.0.0.1:9090      # port-forwarded from the kind cluster in M2
     auth: none
+  dns: true                              # resolve names from the proxy's network; the first hop off-cluster
+  cloud:
+    gcp:
+      projects: [vikrant-platform]       # the projects cloud_get may read
+      auth: adc                          # Application Default Credentials on the proxy host; a federated SA in a cluster
   scm:
     kind: github
     org: smallStepGiantLeap

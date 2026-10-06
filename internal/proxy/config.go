@@ -43,6 +43,11 @@ type Cluster struct {
 type Slots struct {
 	Metrics *MetricsSlot `yaml:"metrics,omitempty"`
 	SCM     *SCMSlot     `yaml:"scm,omitempty"`
+	Cloud   *CloudSlot   `yaml:"cloud,omitempty"`
+	// DNS resolves names from the proxy's network; on by default, since it
+	// needs no credential and is the first hop of any path that leaves a
+	// cluster. Set to false to disable.
+	DNS *bool `yaml:"dns,omitempty"`
 }
 
 // MetricsSlot is a PromQL-speaking backend.

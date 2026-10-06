@@ -229,3 +229,80 @@ func TestProxyTokenAndAuditHygiene(t *testing.T) {
 		t.Errorf("audit log missing calls:\n%s", a)
 	}
 }
+
+func TestDNSResolveClassifiesShapes(t *testing.T) {
+	_, ts, _, _ := newTestServer(t, Limits{})
+	for name, shape := range map[string]string{"hello.hello.svc.cluster.local": "cluster-local", "hello.hello.svc": "cluster-local", "api.ns.svc.clusterset.local": "clusterset", "localhost": "external"} {
+		status, _, body := call(t, ts, "POST", "/v1/dns/resolve", map[string]any{"name": name}, "s1")
+		if status != 200 || !strings.Contains(string(body), `"shape":"`+shape+`"`) {
+			t.Errorf("%s: %d %s", name, status, body)
+		}
+	}
+	// localhost resolves anywhere; a cluster-local name says so when it does not.
+	_, _, body := call(t, ts, "POST", "/v1/dns/resolve", map[string]any{"name": "localhost"}, "s1")
+	if !strings.Contains(string(body), "127.0.0.1") && !strings.Contains(string(body), "::1") {
+		t.Errorf("localhost did not resolve: %s", body)
+	}
+	if status, _, _ := call(t, ts, "POST", "/v1/dns/resolve", map[string]any{"name": "not a name"}, "s1"); status/100 == 2 {
+		t.Error("a malformed name must be refused")
+	}
+}
+
+// fakeGCP serves one bucket, one instance and one forwarding rule.
+func fakeGCP(t *testing.T) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer gcp-token" {
+			http.Error(w, "no token", 401)
+			return
+		}
+		switch {
+		case r.URL.Path == "/storage/v1/b/ledger-exports":
+			w.Write([]byte(`{"name":"ledger-exports","location":"US","versioning":{"enabled":false},"retentionPolicy":{"retentionPeriod":"2592000","isLocked":false},"iamConfiguration":{"uniformBucketLevelAccess":{"enabled":true},"publicAccessPrevention":"enforced"}}`))
+		case r.URL.Path == "/storage/v1/b/ledger-exports/iam":
+			w.Write([]byte(`{"bindings":[{"role":"roles/storage.objectViewer","members":["serviceAccount:reader@acme.iam.gserviceaccount.com"]}]}`))
+		case strings.HasPrefix(r.URL.Path, "/storage/v1/b/"):
+			http.Error(w, "not found", 404)
+		case r.URL.Path == "/compute/v1/projects/acme-data/aggregated/instances":
+			w.Write([]byte(`{"items":{"zones/us-central1-a":{"instances":[{"name":"envoy-1","zone":"projects/acme-data/zones/us-central1-a","status":"RUNNING","labels":{"tier":"envoy"},"networkInterfaces":[{"networkIP":"10.9.0.4","network":"projects/acme-data/global/networks/buffer"}]}]}}}`))
+		case r.URL.Path == "/compute/v1/projects/acme-data/aggregated/forwardingRules":
+			w.Write([]byte(`{"items":{"regions/us-central1":{"forwardingRules":[{"name":"api-ilb","IPAddress":"10.8.0.10","loadBalancingScheme":"INTERNAL","backendService":"projects/acme-data/regions/us-central1/backendServices/api","network":"projects/acme-data/global/networks/prod","region":"projects/acme-data/regions/us-central1"}]}}}`))
+		default:
+			http.Error(w, "unexpected "+r.URL.Path, 404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCloudGetGCP(t *testing.T) {
+	gcp := fakeGCP(t)
+	t.Setenv("GCP_TOKEN_TEST", "gcp-token")
+	t.Setenv("PROXY_TOKEN", "proxy-secret")
+	cfg := &Config{Token: "env:PROXY_TOKEN", Slots: Slots{Cloud: &CloudSlot{GCP: &GCPSlot{Projects: []string{"acme-data"}, Auth: "env:GCP_TOKEN_TEST", API: gcp.URL}}}}
+	cfg.defaults()
+	srv, err := New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	cases := map[string]string{
+		`{"provider":"gcp","resource":"gs://ledger-exports","attribute":"protection"}`: `"retention_seconds":"2592000"`,
+		`{"provider":"gcp","resource":"gs://ledger-exports","attribute":"iam"}`:        `roles/storage.objectViewer`,
+		`{"provider":"gcp","resource":"gs://nope","attribute":"exists"}`:               `"exists":false`,
+		`{"provider":"gcp","resource":"ip:10.9.0.4","attribute":"owner"}`:              `"owner":"instance"`,
+		`{"provider":"gcp","resource":"ip:10.8.0.10","attribute":"owner"}`:             `"owner":"forwarding_rule"`,
+		`{"provider":"gcp","resource":"ip:10.0.0.1","attribute":"owner"}`:              `"owner":"not found"`,
+	}
+	for in, want := range cases {
+		var body map[string]any
+		_ = json.Unmarshal([]byte(in), &body)
+		status, _, out := call(t, ts, "POST", "/v1/cloud/get", body, "s1")
+		if status != 200 || !strings.Contains(string(out), want) {
+			t.Errorf("%s → %d %s (want %s)", in, status, out, want)
+		}
+	}
+	if status, _, _ := call(t, ts, "POST", "/v1/cloud/get", map[string]any{"provider": "aws", "resource": "x", "attribute": "exists"}, "s1"); status != 400 {
+		t.Errorf("an unbound provider must be refused, got %d", status)
+	}
+}

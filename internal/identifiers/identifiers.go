@@ -118,7 +118,10 @@ type Probe struct {
 }
 
 // StackKeys are the lines a complete binding has. A missing key means the
-// specialist must discover it.
+// specialist must discover it. Other keys are allowed and kept — "path"
+// records how the service is reached from outside its cluster when a
+// review derived that: client address shape, the declaration on the
+// server side, the component in the middle, the network plumbing.
 var StackKeys = []string{"mesh", "deploy", "admission", "enforcer", "autoscaler", "metrics"}
 
 // Load reads and lints the file at the repository root. A missing file is

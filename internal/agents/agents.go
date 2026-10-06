@@ -310,7 +310,56 @@ e. Write down the mapping: for each question the lead asked, which metric
 
 Return the binding as lines the next run can verify, in this form:
   mesh: <is> — verify: <one or two cheap checks>
-for each of mesh, deploy, admission, enforcer, autoscaler, metrics.
+for each of mesh, deploy, admission, enforcer, autoscaler, metrics — and
+path, when the service is reached from outside its cluster (below).
+
+## 1b. Paths that leave the cluster
+
+Clients and servers are often in different clusters, and the connective
+tissue between them is usually not Kubernetes. Private cross-cluster
+connectivity always leaves three traces: a distinctive address shape on
+the client side, a declaration on the server side, and usually a
+component in the middle with its own metrics. Follow them in order; each
+is one or two calls.
+
+a. Classify what the client dials (dns_resolve gives the shape):
+   - a cluster-local name (.svc) whose Service is in another cluster →
+     a mesh spanning clusters or a CNI cluster mesh: look for the mesh's
+     east-west gateway or the CNI's global-service annotation and its
+     remote-cluster metrics; request metrics will carry both clusters.
+   - a name ending in .svc.clusterset.local → the multi-cluster Services
+     API: a ServiceExport on the server side, a ServiceImport on the
+     client side, and the implementing controller's metrics.
+   - any other name → resolve it, then ask the cloud what holds each
+     address (cloud_get ip:<address> owner): an instance (a proxy tier or
+     a gateway VM) or a load-balancer front (an internal load balancer, a
+     private endpoint); read what it fronts.
+   - a bare address → the same, without the DNS step.
+b. Find the declaration on the server side: a Service of type
+   LoadBalancer with an internal annotation; a Gateway and its routes; a
+   ServiceExport; a global-service annotation; an east-west gateway; or a
+   custom resource you do not recognise — which means a controller turns
+   it into reachability: find the controller (the org finder can) and
+   read what it does with it. Reachability declared through a custom
+   resource is the normal case in platforms that built their own tier;
+   name it by what the manifests call it.
+c. Find the component in the middle and whether it is measured: gateway
+   pods, a proxy tier on instances, a cloud load balancer, a private
+   endpoint. If it exports metrics, say which families; if not, the hop
+   is intent-only and the report must say so.
+d. Find the plumbing that lets traffic cross: peering, a transit gateway,
+   a shared network, a private endpoint — in the infrastructure code if it
+   is there. Plumbing that exists in the cloud but in no repository is a
+   finding: "traffic flows and nothing declares what permits it."
+e. Record the whole thing as one binding line:
+     path: <client shape> → <declaration> → <middle, measured or not> → <plumbing> — verify: <the cheapest check per hop>
+   and, for every hop that has metrics, a measure query (a proxy tier's
+   request rate, a gateway's error ratio, a load balancer's backends).
+
+Do not assume a path exists: a dependency reached by a cluster-local name
+whose Service is in this cluster has no path to discover. Do not assume
+one does not: a name that resolves to addresses no cluster owns is a path,
+and finding out what owns them is the job.
 
 Work in as few turns as you can: every independent query goes out in the
 same turn, not one per turn. Read mounted repositories with grep and read,

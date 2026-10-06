@@ -113,6 +113,14 @@ type (
 	openPRsIn struct {
 		Repo string `json:"repo" jsonschema:"required"`
 	}
+	resolveIn struct {
+		Name string `json:"name" jsonschema:"required" jsonschema_description:"A DNS name a client dials. Returns the CNAME chain, the addresses, and the name's shape: cluster-local (.svc), clusterset (.svc.clusterset.local, the multi-cluster Services API) or external."`
+	}
+	cloudGetIn struct {
+		Provider  string `json:"provider" jsonschema:"required" jsonschema_description:"The cloud provider, e.g. gcp"`
+		Resource  string `json:"resource" jsonschema:"required" jsonschema_description:"The resource in the provider's own terms: gs://bucket, ip:10.0.0.4, instance:name, project:id"`
+		Attribute string `json:"attribute" jsonschema:"required" jsonschema_description:"exists | iam | labels | protection | owner (owner: which instance or load balancer holds an ip)"`
+	}
 )
 
 // Names, as the agents refer to them.
@@ -123,6 +131,8 @@ const (
 	MetricsQueryRange = "metrics_query_range"
 	MetricsSeries     = "metrics_series"
 	MetricsRules      = "metrics_rules"
+	DNSResolve        = "dns_resolve"
+	CloudGet          = "cloud_get"
 	SCMRepos          = "scm_repos"
 	SCMSearchCode     = "scm_search_code"
 	SCMRead           = "scm_read"
@@ -134,7 +144,7 @@ const (
 // Sets are which connector tools each agent gets.
 var Sets = map[string][]string{
 	"lead":       {Fleet, SCMPR, SCMOpenPRs, SCMRead, SCMMount, MetricsRules},
-	"topology":   {Fleet, MetricsLabelVals, MetricsQuery, MetricsQueryRange, MetricsSeries, MetricsRules, SCMRead},
+	"topology":   {Fleet, MetricsLabelVals, MetricsQuery, MetricsQueryRange, MetricsSeries, MetricsRules, SCMRead, DNSResolve, CloudGet},
 	"org-finder": {Fleet, SCMRepos, SCMSearchCode, SCMRead, SCMMount},
 }
 
@@ -207,6 +217,24 @@ func Tools(c *Client, workdir string) ([]anthropic.BetaTool, error) {
 			"The alerting and recording rules the metrics backend evaluates: the way to learn whether an alert watches a signal.",
 			func(ctx context.Context, _ emptyIn) (anthropic.BetaToolResultBlockParamContentUnion, error) {
 				out, err := c.call(ctx, "POST", "/v1/metrics/rules", nil)
+				if err != nil {
+					return fail(err)
+				}
+				return text(out)
+			})),
+		add(toolrunner.NewBetaToolFromJSONSchema(DNSResolve,
+			"Resolve a DNS name from inside the environment: CNAME chain, addresses, and the name's shape. The first hop of any path that leaves a cluster: a client that dials a name that is not a Service in any cluster is reaching something outside Kubernetes — follow the addresses with cloud_get to find what holds them.",
+			func(ctx context.Context, in resolveIn) (anthropic.BetaToolResultBlockParamContentUnion, error) {
+				out, err := c.call(ctx, "POST", "/v1/dns/resolve", in)
+				if err != nil {
+					return fail(err)
+				}
+				return text(out)
+			})),
+		add(toolrunner.NewBetaToolFromJSONSchema(CloudGet,
+			"Read one fact about a cloud resource through a read-only identity: whether it exists, its IAM, its labels, its protection (retention, versioning, public-access prevention), or — for an ip — which instance or load-balancer front holds it. Absence comes back as a result (exists: false, owner: not found), which is evidence.",
+			func(ctx context.Context, in cloudGetIn) (anthropic.BetaToolResultBlockParamContentUnion, error) {
+				out, err := c.call(ctx, "POST", "/v1/cloud/get", in)
 				if err != nil {
 					return fail(err)
 				}

@@ -22,6 +22,8 @@ type Server struct {
 	audit   *Audit
 	metrics *metricsSlot
 	scm     *scmSlot
+	cloud   *cloudSlot
+	dns     *dnsSlot
 	mux     *http.ServeMux
 }
 
@@ -42,6 +44,14 @@ func New(cfg *Config, log *slog.Logger) (*Server, error) {
 		if s.scm, err = newSCM(cfg.Slots.SCM); err != nil {
 			return nil, err
 		}
+	}
+	if cfg.Slots.Cloud != nil {
+		if s.cloud, err = newCloud(cfg.Slots.Cloud); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.Slots.DNS == nil || *cfg.Slots.DNS {
+		s.dns = newDNS()
 	}
 	s.routes()
 	return s, nil
@@ -154,6 +164,29 @@ func (s *Server) routes() {
 		}
 		return s.scm.openPRs(ctx, in)
 	}))
+	// dns: the first hop of a path that leaves a cluster
+	s.mux.HandleFunc("POST /v1/dns/resolve", s.guard("dns", "resolve", func(ctx context.Context, r *http.Request) (any, int, error) {
+		if s.dns == nil {
+			return nil, 501, errors.New("dns slot is disabled")
+		}
+		var in resolveReq
+		if err := decode(r, &in); err != nil {
+			return nil, 400, err
+		}
+		return s.dns.resolve(ctx, in)
+	}))
+	// cloud: one generic read
+	s.mux.HandleFunc("POST /v1/cloud/get", s.guard("cloud", "get", func(ctx context.Context, r *http.Request) (any, int, error) {
+		if s.cloud == nil {
+			return nil, 501, errors.New("cloud slot is not bound")
+		}
+		var in cloudGetReq
+		if err := decode(r, &in); err != nil {
+			return nil, 400, err
+		}
+		return s.cloud.get(ctx, in)
+	}))
+
 	// The tarball is streamed, not JSON, so it has its own handler.
 	s.mux.HandleFunc("GET /v1/scm/tarball", s.tarballHandler)
 
