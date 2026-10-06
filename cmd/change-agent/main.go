@@ -235,6 +235,9 @@ func runSetup(ctx context.Context, args []string) error {
 	if err := upsert(dev, roster); err != nil {
 		return err
 	}
+	if err := upsert(agents.Instantiator(program), nil); err != nil {
+		return err
+	}
 	return writeLock(*lockPath, l)
 }
 
@@ -332,7 +335,7 @@ func runReview(ctx context.Context, args []string) error {
 	withWorker := fs.Bool("worker", true, "run a one-session worker in this process (the proxy must already be running)")
 	dryRun := fs.Bool("dry-run", false, "print the brief and stop; no session")
 	out := fs.String("out", "", "also write the report JSON here")
-	tier := fs.String("tier", "auto", "auto (triage on the smaller model, escalate to the strongest when warranted), dev (smaller only) or release (strongest only)")
+	tier := fs.String("tier", "staged", "staged (the strongest model writes the obligations, the smaller executes them), auto (triage on the smaller, escalate to the strongest), dev (smaller only) or release (strongest only)")
 	commitProposals := fs.Bool("commit-proposals", false, "commit the report's .paved-agent/ proposals to the PR branch (linted first)")
 	fs.Parse(args)
 
@@ -392,7 +395,8 @@ func runReview(ctx context.Context, args []string) error {
 	}
 	release, okR := lk.Agents[agents.LeadKey]
 	dev, okD := lk.Agents[agents.LeadKey+"-dev"]
-	if !okR || !okD || a.Agent.EnvironmentID == "" {
+	inst, okI := lk.Agents[agents.InstantiatorKey]
+	if !okR || !okD || !okI || a.Agent.EnvironmentID == "" {
 		return fmt.Errorf("run setup first, and set agent.environment_id in %s", *cfgPath)
 	}
 	if *budget == 0 {
@@ -422,6 +426,25 @@ func runReview(ctx context.Context, args []string) error {
 	}
 	var rep *findings.Report
 	switch *tier {
+	case "staged":
+		// The strongest model writes the obligations (short); the smaller
+		// model does everything else. Budgets: a third, then the rest.
+		st := session.Staged{Instantiate: opts(inst, *budget/3), Execute: opts(dev, *budget)}
+		fmt.Fprintf(os.Stderr, "instantiate on %s (budget $%.2f), execute on %s (budget $%.2f)\n", inst.ID, *budget/3, dev.ID, *budget)
+		out, err := st.Run(ctx, client, brief)
+		if out != nil {
+			for _, u := range out.Usage {
+				fmt.Fprintln(os.Stderr, u)
+			}
+		}
+		if err != nil {
+			if out != nil && out.LastText != "" {
+				fmt.Fprintln(os.Stderr, "the final message was not what was expected; printing it as is:")
+				fmt.Println(out.LastText)
+			}
+			return err
+		}
+		rep = out.Report
 	case "auto":
 		// Triage spends at most a third of the budget; the deep tier gets the rest.
 		t := session.Tiered{Triage: opts(dev, *budget/3), Deep: opts(release, *budget)}

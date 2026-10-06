@@ -28,9 +28,10 @@ type Def struct {
 
 // Keys.
 const (
-	LeadKey      = "impact-lead"
-	TopologyKey  = "topology"
-	OrgFinderKey = "org-finder"
+	LeadKey         = "impact-lead"
+	InstantiatorKey = "instantiator"
+	TopologyKey     = "topology"
+	OrgFinderKey    = "org-finder"
 )
 
 // Models. The lead judges; the specialists read and measure.
@@ -83,6 +84,16 @@ func Lead(p *Program, model, effort string) Def {
 }
 
 const leadMechanics = `# Mechanics
+
+## When the obligations are already written
+
+The task message may carry an instantiation written by a senior
+reviewer: the worst case, the proportionality, and the obligations.
+Adopt it. Do not re-instantiate; establish each obligation as written,
+in the order given, with the evidence it names, and grade from what you
+establish. Add an obligation only when the change plainly needs one the
+list lacks, and say that you added it. Report the instantiation you were
+given as yours.
 
 ## Where things are
 
@@ -369,6 +380,56 @@ Work like this:
 
 If nothing matches, return exactly what you searched for and where, so
 the lead can ask a human. Do not guess a repository.`
+
+// Instantiator does the first move only, on the strongest model: it reads
+// the change and writes the obligations — what must be established, where
+// the evidence lives, what it costs when it cannot be. A smaller model
+// then executes them. This is where the judgment is, and it is short.
+func Instantiator(p *Program) Def {
+	return Def{
+		Key:         InstantiatorKey,
+		Name:        "Instantiator",
+		Description: "Reads a pull request and writes, for a smaller model to execute, exactly what must be established for it to be a good change: the worst case, the proportionality, and one obligation per property that applies, each with where its evidence lives.",
+		Model:       LeadModel, Effort: "high",
+		Builtin: sandboxTools, Connectors: []string{connectors.SCMPR, connectors.SCMMount, connectors.SCMRead, connectors.Fleet},
+		System: p.Render() + "\n\n" + instantiatorMechanics,
+	}
+}
+
+const instantiatorMechanics = `# Your part: the first move only
+
+You do move 1 — Instantiate — and stop. A smaller model will do moves 2
+and 3 against what you write, so write for a reader who will not
+re-derive your reasoning: say exactly what to establish, exactly where
+the evidence lives, and exactly what it costs if it cannot be
+established.
+
+Read the change: scm_pr for the files and patches; mount the repository
+with scm_mount and read around the diff when the diff alone does not say
+what the change relies on. Read the identifiers and the measured facts in
+the task message. Do not delegate, do not measure, do not grade. Spend
+at most a few tool calls; the point is judgment, not discovery.
+
+Then write the obligations. For each property that this change could
+affect, one or two obligations: a concrete claim to establish — with the
+specific thing to check (a file, an object, a query, a code path) and
+the specific failure this change could cause (name the error code, the
+caller, the path). For a property this change cannot affect, one
+obligation: "show why it is unaffected" in one line. Weight by the worst
+case.
+
+Finish with the instantiation as JSON inside one fenced block marked
+json, and nothing after it:
+
+{
+  "worst_case": "<what fails, for whom, where, if this change is wrong>",
+  "proportionality": "full|reduced",
+  "obligations": [
+    {"property": "<id>", "establish": "<the claim to establish, concrete>",
+     "evidence": "<exactly where: file and section, object, query, code path>",
+     "if_not": "blocking|warning|info"}
+  ]
+}`
 
 // ToolsetParams enables only the named built-in tools.
 func ToolsetParams(names []string) anthropic.BetaAgentNewParamsToolUnion {

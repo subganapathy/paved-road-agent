@@ -53,11 +53,49 @@ type Verdict struct {
 	Summary string   `json:"summary"`
 }
 
-// Obligation is what one property means for this change.
+// Obligation is what one property means for this change: what must be
+// shown, where the evidence lives, and what it costs when it cannot be.
 type Obligation struct {
 	Property  string `json:"property"`
 	Establish string `json:"establish"`
 	Evidence  string `json:"evidence"`
+	IfNot     string `json:"if_not,omitempty"` // blocking | warning | info
+}
+
+// ParseInstantiation extracts the instantiator's JSON: the first move,
+// written by the strongest model, for a smaller model to execute.
+func ParseInstantiation(text string) (*Instantiation, error) {
+	body := strings.TrimSpace(text)
+	if m := fence.FindAllStringSubmatch(text, -1); len(m) > 0 {
+		body = strings.TrimSpace(m[len(m)-1][1])
+	}
+	var in Instantiation
+	if err := json.Unmarshal([]byte(body), &in); err != nil {
+		return nil, fmt.Errorf("instantiation is not valid JSON: %w", err)
+	}
+	if len(in.Obligations) == 0 || in.WorstCase == "" {
+		return nil, errors.New("instantiation has no worst case or no obligations")
+	}
+	for i, o := range in.Obligations {
+		if !slices.Contains(Properties, o.Property) {
+			return nil, fmt.Errorf("obligation %d names property %q, not one of %s", i, o.Property, strings.Join(Properties, ", "))
+		}
+	}
+	return &in, nil
+}
+
+// Render writes the instantiation for the executor's brief.
+func (in *Instantiation) Render() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Worst case: %s\nProportionality: %s\n\nObligations:\n", in.WorstCase, in.Proportionality)
+	for _, o := range in.Obligations {
+		fmt.Fprintf(&sb, "- [%s] establish: %s\n    evidence: %s", o.Property, o.Establish, o.Evidence)
+		if o.IfNot != "" {
+			fmt.Fprintf(&sb, "\n    if not established: %s", o.IfNot)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }
 
 // Instantiation is the lead's first move, written down.

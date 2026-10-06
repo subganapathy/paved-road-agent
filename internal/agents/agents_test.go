@@ -13,7 +13,7 @@ func TestPromptsNameNoProduct(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range append([]Def{Lead(p, "", "")}, Specialists...) {
+	for _, d := range append([]Def{Lead(p, "", ""), Instantiator(p)}, Specialists...) {
 		if hits := FindProductNames(d.System + " " + d.Description); len(hits) > 0 {
 			t.Errorf("%s: product names in prompt: %v", d.Key, hits)
 		}
