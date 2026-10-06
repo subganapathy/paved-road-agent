@@ -29,6 +29,7 @@ import (
 	"github.com/subganapathy/paved-road-agent/internal/agents"
 	"github.com/subganapathy/paved-road-agent/internal/connectors"
 	"github.com/subganapathy/paved-road-agent/internal/controller"
+	"github.com/subganapathy/paved-road-agent/internal/findings"
 	"github.com/subganapathy/paved-road-agent/internal/github"
 	"github.com/subganapathy/paved-road-agent/internal/identifiers"
 	"github.com/subganapathy/paved-road-agent/internal/proxy"
@@ -331,7 +332,8 @@ func runReview(ctx context.Context, args []string) error {
 	withWorker := fs.Bool("worker", true, "run a one-session worker in this process (the proxy must already be running)")
 	dryRun := fs.Bool("dry-run", false, "print the brief and stop; no session")
 	out := fs.String("out", "", "also write the report JSON here")
-	tier := fs.String("tier", "release", "release (strongest model) or dev (smaller model, for iterating)")
+	tier := fs.String("tier", "auto", "auto (triage on the smaller model, escalate to the strongest when warranted), dev (smaller only) or release (strongest only)")
+	commitProposals := fs.Bool("commit-proposals", false, "commit the report's .paved-agent/ proposals to the PR branch (linted first)")
 	fs.Parse(args)
 
 	a, err := loadAgentConfig(*cfgPath)
@@ -372,12 +374,7 @@ func runReview(ctx context.Context, args []string) error {
 	if change.Identifiers != nil {
 		// Run the file's measure: queries now, through the proxy, so the lead
 		// starts with numbers instead of spending turns on them.
-		proxyTok, _ := proxy.Credential(cfg.Token)
-		base := a.Agent.Proxy
-		if base == "" {
-			base = "http://" + cfg.Listen
-		}
-		change.Measured = session.Measure(ctx, &connectors.Client{Base: base, Token: proxyTok, Session: "premeasure-" + strings.ReplaceAll(*pr, "/", "-")}, change.Identifiers)
+		change.Measured = session.Measure(ctx, measureClient(a, cfg), change.Identifiers)
 	}
 	brief := session.Brief(change)
 	if *dryRun {
@@ -393,13 +390,10 @@ func runReview(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	leadKey := agents.LeadKey
-	if *tier == "dev" {
-		leadKey += "-dev"
-	}
-	lead, ok := lk.Agents[leadKey]
-	if !ok || a.Agent.EnvironmentID == "" {
-		return fmt.Errorf("run setup first (tier %s), and set agent.environment_id in %s", *tier, *cfgPath)
+	release, okR := lk.Agents[agents.LeadKey]
+	dev, okD := lk.Agents[agents.LeadKey+"-dev"]
+	if !okR || !okD || a.Agent.EnvironmentID == "" {
+		return fmt.Errorf("run setup first, and set agent.environment_id in %s", *cfgPath)
 	}
 	if *budget == 0 {
 		*budget = a.Agent.BudgetUSD
@@ -420,34 +414,87 @@ func runReview(ctx context.Context, args []string) error {
 		}()
 	}
 
-	s, err := session.Create(ctx, client, session.Options{
-		LeadID: lead.ID, LeadVersion: lead.Version, EnvironmentID: a.Agent.EnvironmentID,
-		BudgetUSD: *budget, Title: "impact: " + *pr, Metadata: map[string]string{"change": *pr},
-	}, brief)
-	if err != nil {
-		return fmt.Errorf("create session: %w", err)
+	opts := func(l lockedAgent, budget float64) session.Options {
+		return session.Options{LeadID: l.ID, LeadVersion: l.Version, EnvironmentID: a.Agent.EnvironmentID,
+			BudgetUSD: budget, Title: "impact: " + *pr, Metadata: map[string]string{"change": *pr}}
 	}
-	fmt.Fprintf(os.Stderr, "session %s (budget $%.2f)\n", s.ID, *budget)
-
-	rep, final, text, err := session.Collect(ctx, client, s.ID)
-	if final != nil {
-		fmt.Fprintf(os.Stderr, "session %s: %d input (%d cached), %d output tokens, %.0fs active\n",
-			final.Status, final.Usage.InputTokens, final.Usage.CacheReadInputTokens, final.Usage.OutputTokens, final.Stats.ActiveSeconds)
-	}
-	if err != nil {
-		if text != "" {
-			fmt.Fprintln(os.Stderr, "the lead's final message was not a report; printing it as is:")
-			fmt.Println(text)
+	var rep *findings.Report
+	switch *tier {
+	case "auto":
+		// Triage spends at most a third of the budget; the deep tier gets the rest.
+		t := session.Tiered{Triage: opts(dev, *budget/3), Deep: opts(release, *budget)}
+		fmt.Fprintf(os.Stderr, "triage on %s (budget $%.2f), deep on %s if warranted (budget $%.2f)\n", dev.ID, *budget/3, release.ID, *budget)
+		out, err := t.Run(ctx, client, brief)
+		if out != nil {
+			for _, u := range out.Usage {
+				fmt.Fprintln(os.Stderr, u)
+			}
+			if out.Escalated {
+				fmt.Fprintln(os.Stderr, "escalated to the deep tier")
+			}
 		}
-		return err
-	}
-	if dropped := rep.Normalize(); len(dropped) > 0 {
-		for _, f := range dropped {
-			fmt.Fprintf(os.Stderr, "dropped a finding without evidence: %s\n", f.Claim)
+		if err != nil {
+			if out != nil && out.LastText != "" {
+				fmt.Fprintln(os.Stderr, "the lead's final message was not a report; printing it as is:")
+				fmt.Println(out.LastText)
+			}
+			return err
+		}
+		rep = out.Report
+	default:
+		l := release
+		if *tier == "dev" {
+			l = dev
+		}
+		s, err := session.Create(ctx, client, opts(l, *budget), brief)
+		if err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "session %s (budget $%.2f)\n", s.ID, *budget)
+		var final *anthropic.BetaManagedAgentsSession
+		var text string
+		rep, final, text, err = session.Collect(ctx, client, s.ID)
+		if final != nil {
+			fmt.Fprintf(os.Stderr, "session %s: %d input (%d cached), %d output tokens, %.0fs active\n",
+				final.Status, final.Usage.InputTokens, final.Usage.CacheReadInputTokens, final.Usage.OutputTokens, final.Stats.ActiveSeconds)
+		}
+		if err != nil {
+			if text != "" {
+				fmt.Fprintln(os.Stderr, "the lead's final message was not a report; printing it as is:")
+				fmt.Println(text)
+			}
+			return err
+		}
+		if dropped := rep.Normalize(); len(dropped) > 0 {
+			for _, f := range dropped {
+				fmt.Fprintf(os.Stderr, "dropped a finding without evidence: %s\n", f.Claim)
+			}
 		}
 	}
 	rep.Change = *pr + "@" + loaded.HeadSHA
 	fmt.Print(rep.Render())
+	if *commitProposals && len(rep.Proposals) > 0 {
+		// The same write path the controller uses: in-process, through the
+		// proxy's scm slot, restricted to .paved-agent/ on the PR branch.
+		srv, err := proxy.New(cfg, slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		if err != nil {
+			return err
+		}
+		for _, p := range rep.Proposals {
+			if p.Path == identifiers.Path {
+				if _, lerr := identifiers.Parse([]byte(p.Content)); lerr != nil {
+					fmt.Fprintf(os.Stderr, "not committing %s: it fails the lint: %v\n", p.Path, lerr)
+					continue
+				}
+			}
+			res, _, err := srv.SCM().CommitFile(ctx, proxy.CommitFileReq{Repo: ref.Repo, Branch: loaded.HeadRef, Path: p.Path, Content: p.Content, Message: "paved-agent: " + firstLine(p.Reason)})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "commit %s: %v\n", p.Path, err)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "committed %s to %s: %v\n", p.Path, loaded.HeadRef, res)
+		}
+	}
 	if len(rep.Questions) > 0 {
 		fmt.Fprintf(os.Stderr, "\n%d question(s): edit %s in the PR branch as shown, push, and run again.\n", len(rep.Questions), identifiers.Path)
 	}
@@ -515,6 +562,7 @@ func runServe(ctx context.Context, args []string) error {
 	if !ok || a.Agent.EnvironmentID == "" {
 		return fmt.Errorf("run setup first, and set agent.environment_id in %s", *cfgPath)
 	}
+	devLead := lk.Agents[agents.LeadKey+"-dev"]
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	srv, err := proxy.New(cfg, log)
 	if err != nil {
@@ -534,8 +582,8 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	ctl, err := controller.New(controller.Config{
 		Org: cfg.Slots.SCM.Org, Watch: a.Watch.Repos, WebhookSecret: secret, CommitFiles: a.Watch.CommitFiles, StateDir: a.Watch.StateDir,
-		BudgetUSD: budget, LeadID: lead.ID, LeadVersion: lead.Version, EnvironmentID: a.Agent.EnvironmentID,
-	}, client, srv.SCM(), &github.Client{Token: ghTok, Base: cfg.Slots.SCM.API}, log)
+		BudgetUSD: budget, LeadID: lead.ID, LeadVersion: lead.Version, DevLeadID: devLead.ID, DevVersion: devLead.Version, EnvironmentID: a.Agent.EnvironmentID,
+	}, client, srv.SCM(), &github.Client{Token: ghTok, Base: cfg.Slots.SCM.API}, measureClient(a, cfg), log)
 	if err != nil {
 		return err
 	}
@@ -572,6 +620,27 @@ func runServe(ctx context.Context, args []string) error {
 		return err
 	}
 	return nil
+}
+
+// measureClient reaches the proxy for pre-measurement, as one synthetic session.
+func measureClient(a agentConfig, cfg *proxy.Config) *connectors.Client {
+	proxyTok, _ := proxy.Credential(cfg.Token)
+	base := a.Agent.Proxy
+	if base == "" {
+		base = "http://" + cfg.Listen
+	}
+	return &connectors.Client{Base: base, Token: proxyTok, Session: "premeasure"}
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 100 {
+		s = s[:97] + "..."
+	}
+	return s
 }
 
 var _ = strings.TrimSpace

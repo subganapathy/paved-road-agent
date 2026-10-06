@@ -49,7 +49,7 @@ func (f *fakeWrites) Comments(_ context.Context, _ string, _ int, _ int64) ([]pr
 
 func newController(t *testing.T, secret string) (*Controller, *fakeWrites) {
 	w := &fakeWrites{}
-	c, err := New(Config{Org: "acme", Watch: []string{"hello"}, WebhookSecret: secret, StateDir: t.TempDir(), CommitFiles: true}, anthropic.Client{}, w, nil, nil)
+	c, err := New(Config{Org: "acme", Watch: []string{"hello"}, WebhookSecret: secret, StateDir: t.TempDir(), CommitFiles: true}, anthropic.Client{}, w, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

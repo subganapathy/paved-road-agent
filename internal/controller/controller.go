@@ -24,6 +24,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 
+	"github.com/subganapathy/paved-road-agent/internal/connectors"
 	"github.com/subganapathy/paved-road-agent/internal/findings"
 	"github.com/subganapathy/paved-road-agent/internal/github"
 	"github.com/subganapathy/paved-road-agent/internal/identifiers"
@@ -40,8 +41,10 @@ type Config struct {
 	CommitFiles   bool     // may the controller commit .paved-agent/ to PR branches (answers and proposals)
 	StateDir      string
 	BudgetUSD     float64
-	LeadID        string
+	LeadID        string // the deep tier
 	LeadVersion   int64
+	DevLeadID     string // the triage tier; empty disables triage and runs deep only
+	DevVersion    int64
 	EnvironmentID string
 	AnswerModel   string // the small model that turns a prose reply into the file; default claude-sonnet-5
 }
@@ -58,13 +61,17 @@ type Controller struct {
 	gh     *github.Client
 	log    *slog.Logger
 
+	// measureClient runs the identifiers' measure: queries through the
+	// proxy before a session, so the lead starts with numbers.
+	measureClient *connectors.Client
+
 	mu   sync.Mutex
 	runs map[string]context.CancelFunc // one review per PR; a new head cancels the old
 }
 
 // New builds a controller. gh is the read client (PR load, file contents);
 // writes is the proxy's scm slot.
-func New(cfg Config, client anthropic.Client, writes proxy.Writes, gh *github.Client, log *slog.Logger) (*Controller, error) {
+func New(cfg Config, client anthropic.Client, writes proxy.Writes, gh *github.Client, measure *connectors.Client, log *slog.Logger) (*Controller, error) {
 	if cfg.StatusContext == "" {
 		cfg.StatusContext = "impact"
 	}
@@ -80,7 +87,7 @@ func New(cfg Config, client anthropic.Client, writes proxy.Writes, gh *github.Cl
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Controller{cfg: cfg, client: client, writes: writes, gh: gh, log: log.With("component", "controller"), runs: map[string]context.CancelFunc{}}, nil
+	return &Controller{cfg: cfg, client: client, writes: writes, gh: gh, measureClient: measure, log: log.With("component", "controller"), runs: map[string]context.CancelFunc{}}, nil
 }
 
 // Watched reports whether a repository's PRs are reviewed: any repository
@@ -225,36 +232,61 @@ func (c *Controller) review(ctx context.Context, repo string, number int, head s
 		change.Identifiers, change.IdentifiersText = f, text
 	}
 	brief := session.Brief(change)
-	s, err := session.Create(ctx, c.client, session.Options{
-		LeadID: c.cfg.LeadID, LeadVersion: c.cfg.LeadVersion, EnvironmentID: c.cfg.EnvironmentID,
-		BudgetUSD: c.cfg.BudgetUSD, Title: "impact: " + key, Metadata: map[string]string{"change": key, "head": loaded.HeadSHA},
-	}, brief)
-	if err != nil {
-		return fmt.Errorf("create session: %w", err)
+	if change.Identifiers != nil {
+		change.Measured = session.Measure(ctx, c.measureClient, change.Identifiers)
+		brief = session.Brief(change)
 	}
-	c.log.Info("session started", "pr", key, "session", s.ID)
-	pending("reviewing (session " + s.ID + ")")
-
-	rep, final, text, err := session.Collect(ctx, c.client, s.ID)
-	if err != nil {
-		if text != "" {
-			_, _, _ = c.writes.Comment(ctx, proxy.CommentReq{Repo: repo, Number: number, Body: marker + "\n**impact:** the review ended without a report. The lead's last message:\n\n" + text})
+	deep := session.Options{LeadID: c.cfg.LeadID, LeadVersion: c.cfg.LeadVersion, EnvironmentID: c.cfg.EnvironmentID,
+		BudgetUSD: c.cfg.BudgetUSD, Title: "impact: " + key, Metadata: map[string]string{"change": key, "head": loaded.HeadSHA}}
+	var rep *findings.Report
+	var usage, sessionID string
+	if c.cfg.DevLeadID != "" {
+		triage := deep
+		triage.LeadID, triage.LeadVersion, triage.BudgetUSD = c.cfg.DevLeadID, c.cfg.DevVersion, c.cfg.BudgetUSD/3
+		out, err := session.Tiered{Triage: triage, Deep: deep}.Run(ctx, c.client, brief)
+		if out != nil && len(out.Sessions) > 0 {
+			sessionID = out.Sessions[len(out.Sessions)-1]
+			usage = strings.Join(out.Usage, " · ")
+			if out.Escalated {
+				usage += " · escalated"
+			}
 		}
-		return err
+		if err != nil {
+			if out != nil && out.LastText != "" {
+				_, _, _ = c.writes.Comment(ctx, proxy.CommentReq{Repo: repo, Number: number, Body: marker + "\n**impact:** the review ended without a report. The lead's last message:\n\n" + out.LastText})
+			}
+			return err
+		}
+		rep = out.Report
+	} else {
+		s, err := session.Create(ctx, c.client, deep, brief)
+		if err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+		sessionID = s.ID
+		pending("reviewing (session " + s.ID + ")")
+		r, final, text, err := session.Collect(ctx, c.client, s.ID)
+		if err != nil {
+			if text != "" {
+				_, _, _ = c.writes.Comment(ctx, proxy.CommentReq{Repo: repo, Number: number, Body: marker + "\n**impact:** the review ended without a report. The lead's last message:\n\n" + text})
+			}
+			return err
+		}
+		r.Normalize()
+		rep = r
+		if final != nil {
+			usage = fmt.Sprintf("%d input (%d cached) · %d output tokens · %.0fs", final.Usage.InputTokens, final.Usage.CacheReadInputTokens, final.Usage.OutputTokens, final.Stats.ActiveSeconds)
+		}
 	}
-	dropped := rep.Normalize()
+	c.log.Info("review done", "pr", key, "session", sessionID, "verdict", rep.Verdict)
 	rep.Change = key + "@" + loaded.HeadSHA
 
 	st := c.load(repo, number)
-	st.Head, st.HeadRef, st.Reviewed, st.Verdict, st.SessionID = loaded.HeadSHA, loaded.HeadRef, time.Now(), rep.Verdict, s.ID
+	st.Head, st.HeadRef, st.Reviewed, st.Verdict, st.SessionID = loaded.HeadSHA, loaded.HeadRef, time.Now(), rep.Verdict, sessionID
 	st.Questions = rep.Questions
 	c.save(st)
 
-	usage := ""
-	if final != nil {
-		usage = fmt.Sprintf("%d input (%d cached) · %d output tokens · %.0fs", final.Usage.InputTokens, final.Usage.CacheReadInputTokens, final.Usage.OutputTokens, final.Stats.ActiveSeconds)
-	}
-	body := marker + "\n" + findings.Markdown(rep, len(dropped), usage)
+	body := marker + "\n" + findings.Markdown(rep, 0, usage)
 	if _, _, err := c.writes.Comment(ctx, proxy.CommentReq{Repo: repo, Number: number, Body: body}); err != nil {
 		return err
 	}
