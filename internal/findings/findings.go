@@ -140,10 +140,70 @@ type StackLine struct {
 // EnvFacts is what discovery measured for one environment.
 type EnvFacts struct {
 	Clusters  []string `json:"clusters"`
-	Instances int      `json:"instances"`
-	RPS       float64  `json:"rps"`
+	Instances Count    `json:"instances"`
+	RPS       Number   `json:"rps"`
 	Callers   []string `json:"callers"`
 	External  bool     `json:"external"`
+}
+
+// Count is an integer the model may write as a number, a numeric string,
+// or a map of numbers (instances per cluster, which is a reasonable way
+// to say it); a map sums and keeps its parts. Shape is never a reason to
+// reject a report.
+type Count struct {
+	Total int            `json:"total"`
+	By    map[string]int `json:"by,omitempty"`
+}
+
+func (c *Count) UnmarshalJSON(b []byte) error {
+	var n float64
+	if json.Unmarshal(b, &n) == nil {
+		c.Total = int(n)
+		return nil
+	}
+	var str string
+	if json.Unmarshal(b, &str) == nil {
+		fmt.Sscan(str, &n)
+		c.Total = int(n)
+		return nil
+	}
+	var by map[string]json.RawMessage
+	if json.Unmarshal(b, &by) == nil {
+		c.By = map[string]int{}
+		for k, v := range by {
+			var part Count
+			if part.UnmarshalJSON(v) == nil {
+				c.By[k] = part.Total
+				c.Total += part.Total
+			}
+		}
+		return nil
+	}
+	return nil // anything else counts as unknown, not as an error
+}
+
+func (c Count) MarshalJSON() ([]byte, error) {
+	if len(c.By) > 0 {
+		return json.Marshal(c.By)
+	}
+	return json.Marshal(c.Total)
+}
+
+// Number tolerates a numeric string, "n/a", or null.
+type Number float64
+
+func (x *Number) UnmarshalJSON(b []byte) error {
+	var f float64
+	if json.Unmarshal(b, &f) == nil {
+		*x = Number(f)
+		return nil
+	}
+	var str string
+	if json.Unmarshal(b, &str) == nil {
+		fmt.Sscan(str, &f)
+		*x = Number(f)
+	}
+	return nil
 }
 
 // Discovery is the run memory, summarized.
@@ -303,13 +363,94 @@ func Parse(text string) (*Report, error) {
 		body = strings.TrimSpace(m[len(m)-1][1])
 	}
 	var r Report
-	if err := json.Unmarshal([]byte(body), &r); err != nil {
-		return nil, fmt.Errorf("report is not valid JSON: %w", err)
+	err := json.Unmarshal([]byte(body), &r)
+	if err != nil {
+		// The block is JSON but not our shape somewhere: take what fits
+		// field by field rather than asking the model to write seven
+		// thousand tokens again. A field that does not fit is dropped and
+		// the report says so.
+		var generic map[string]json.RawMessage
+		if json.Unmarshal([]byte(body), &generic) != nil {
+			return nil, fmt.Errorf("report is not valid JSON: %w", err)
+		}
+		r = lenient(generic, err)
 	}
 	if r.Properties == nil && len(r.Findings) == 0 && len(r.Questions) == 0 {
 		return nil, errors.New("report has no properties, findings or questions")
 	}
 	return &r, nil
+}
+
+// lenient rebuilds a report from a JSON object one field at a time,
+// and one finding, question or proposal at a time within the lists.
+func lenient(g map[string]json.RawMessage, cause error) Report {
+	var r Report
+	take := func(key string, into any) {
+		if raw, ok := g[key]; ok {
+			_ = json.Unmarshal(raw, into)
+		}
+	}
+	take("change", &r.Change)
+	take("instantiation", &r.Instantiation)
+	take("verdict", &r.Verdict)
+	take("summary", &r.Summary)
+	take("properties", &r.Properties)
+	take("unknowns", &r.Unknowns)
+	if raw, ok := g["discovery"]; ok {
+		var d map[string]json.RawMessage
+		if json.Unmarshal(raw, &d) == nil {
+			if v, ok := d["stack"]; ok {
+				_ = json.Unmarshal(v, &r.Discovery.Stack)
+			}
+			if v, ok := d["verified"]; ok {
+				_ = json.Unmarshal(v, &r.Discovery.Verified)
+			}
+			if v, ok := d["broken"]; ok {
+				_ = json.Unmarshal(v, &r.Discovery.Broken)
+			}
+			if v, ok := d["by_env"]; ok {
+				var envs map[string]json.RawMessage
+				if json.Unmarshal(v, &envs) == nil {
+					r.Discovery.ByEnv = map[string]EnvFacts{}
+					for name, e := range envs {
+						var facts EnvFacts
+						_ = json.Unmarshal(e, &facts)
+						r.Discovery.ByEnv[name] = facts
+					}
+				}
+			}
+		}
+	}
+	each := func(key string, add func(json.RawMessage)) {
+		if raw, ok := g[key]; ok {
+			var items []json.RawMessage
+			if json.Unmarshal(raw, &items) == nil {
+				for _, it := range items {
+					add(it)
+				}
+			}
+		}
+	}
+	each("findings", func(it json.RawMessage) {
+		var f Finding
+		if json.Unmarshal(it, &f) == nil {
+			r.Findings = append(r.Findings, f)
+		}
+	})
+	each("questions", func(it json.RawMessage) {
+		var q Question
+		if json.Unmarshal(it, &q) == nil {
+			r.Questions = append(r.Questions, q)
+		}
+	})
+	each("proposals", func(it json.RawMessage) {
+		var p FileChange
+		if json.Unmarshal(it, &p) == nil {
+			r.Proposals = append(r.Proposals, p)
+		}
+	})
+	r.Unknowns = append(r.Unknowns, Unknown{What: "the report JSON did not fully match the contract and was read leniently: " + cause.Error(), Blocks: nil})
+	return r
 }
 
 // Render writes the report for a terminal or a comment.

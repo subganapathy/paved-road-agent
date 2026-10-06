@@ -115,8 +115,9 @@ short), then these in the SDK, in order:
    call is executed and posted **exactly once**; the **idle countdown**
    (`MaxIdle`) armed on `session.status_idle` with any stop reason other
    than `requires_action`.
-4. `tools/agenttoolset/` — bash/read/glob/grep confined to the workdir;
-   `Env` for bash (we pass a minimal map: no credentials).
+4. `tools/agenttoolset/` — read/glob/grep confined to the workdir. Bash
+   is ours now: `internal/shell` forwards each call to a sidecar
+   container that holds no credential (see §6a).
 
 What happened in the third run, 2026-10-05 18:25 PT, is the worked
 example: a heartbeat timed out on our side but reached the server; the
@@ -127,12 +128,28 @@ client not tell whether a timed-out heartbeat succeeded? Why "release
 without stopping"? What does the server do with an item whose lease
 expires?
 
+## 6a. The sandbox pod — `deploy/`, `internal/shell`, `internal/proxy/agentapi.go`
+
+Read `deploy/sandbox.yaml` with `deploy/README.md` beside it, then
+`sandbox.VerifyConfinement`, then `shell.go`, then `agentapi.go`. The
+questions: What does the shell container hold, and what can it reach?
+Why does the worker's *own* platform traffic go through the proxy, and
+what does the proxy swap? Which nine paths are allowed and why not
+`POST /v1/sessions`? Why must the worker verify confinement rather than
+trust the manifest (kindnet)? What is the residual risk of the worker
+and the shell sharing a pod, and which future design removes it
+(DESIGN §10.4)? Run `hack/sandbox/verify.sh` and read each check as a
+thing the E5 executor did from the laptop.
+
 ## 7. One session, event by event — `internal/session/`
 
 `Brief` (the initial message); `Create` (agent version, environment,
-budget in cents, `initial_events`); `Wait` — note the subtlety: a session
-is *idle* between every tool call too (stop reason `requires_action`), so
-finished means idle with any other reason, read from the last
+budget in cents, `initial_events`); `Wait` — note the subtleties: a
+session is *idle* between every tool call too (stop reason
+`requires_action`); and when the lead ends its turn after delegating, it
+is idle with `end_turn` while a specialist still runs, and the reply
+will resume it — so finished means idle with `end_turn`, no thread
+running, and no reply after that idle, read from the last
 `session.status_idle` event; `LastLeadMessage` (the last `agent.message`
 on the main thread); `Trace` (`change-agent trace --session ID`).
 `tiered.go`: triage on the smaller model, escalation to the deep tier.
@@ -143,9 +160,17 @@ delegation (`agent.thread_message_sent`), the specialist threads, the
 report. Then `evals/runs/2026-10-05-hello2-dev/trace.txt` — the same
 machinery with identifiers present: eight tool calls, no delegation.
 
+Then run `change-agent cost --turns --session <id>` on the E5 executor
+(`sesn_013sdXAzsvJnngrkdMgprrGT`) and read the lead's timeline: twenty
+turns of `sleep` and "check", then the report written three times. That
+is `internal/session/cost.go`; `evals/runs/README.md` has the table.
+
 Questions: What is the unit of cost (hint: a *turn* re-reads the whole
-context; cached reads are ~10%)? Why did `measure:` cut 50 turns to
-zero? What does a budget stop look like (run 3)?
+context; cached reads are ~10%)? Which token bucket was largest in every
+session, and what does that say about re-emitting a report? Why did
+`measure:` cut 50 turns to zero? Why did the estimates run low, and
+what is the ground truth (`change-agent sessions`)? What does a budget
+stop look like (run 3)?
 
 ## 8. The report — `internal/findings/findings.go`
 
